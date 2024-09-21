@@ -23,6 +23,7 @@ async function download(game) {
     let replayfilename = `./demos/${data.fileName}`;
     if (!fs.existsSync(replayfilename)) {
         const file = fs.createWriteStream(replayfilename);
+        // BAR object storage URL source of truth: https://github.com/beyond-all-reason/bar-live-services/blob/18345875acea8f20dcae07f6828bf5d8457ba27f/nuxt.config.ts#L18
         const f = await fetch(`https://storage.uk.cloud.ovh.net/v1/AUTH_10286efc0d334efd917d476d7183232e/BAR/demos/${data.fileName}`).then(response => {
             return new Promise((resolve, reject) => {
                 try {
