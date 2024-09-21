@@ -52,7 +52,7 @@ async function main() {
     }
     let data;
     if (!fs.existsSync("./data.json")) {
-        data = await fetch("https://api.bar-rts.com/replays?page=1&limit=1000&preset=duel&hasBots=false&endedNormally=true&durationRangeMins=3&durationRangeMins=120").then(data => data.json());
+        data = await fetch("https://api.bar-rts.com/replays?page=1&limit=10&preset=duel&hasBots=false&endedNormally=true&durationRangeMins=3&durationRangeMins=120").then(data => data.json());
         fs.writeFileSync('./data.json', JSON.stringify(data, null, 2));
     } else {
         data = JSON.parse(fs.readFileSync("./data.json").toString());
