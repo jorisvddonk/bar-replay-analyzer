@@ -11,12 +11,6 @@ if (!barPath) {
 }
 console.log("BAR path: " + barPath);
 
-let barVersion = process.env.BAR_VERSION;
-if (!barVersion) {
-    barVersion = "Beyond All Reason test-26764-63ce02a";
-}
-console.log("BAR game version: " + barVersion);
-
 
 function getScript(replayPath) {
     return `[modoptions]
