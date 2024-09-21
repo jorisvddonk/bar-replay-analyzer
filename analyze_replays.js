@@ -30,12 +30,29 @@ function getScript(replayPath) {
 }`
 }
 
-async function downloadMap(mapname) {
+let downloadedGames = [];
+
+function getGameVersions() {
+    let versions;
+    try {
+        versions = JSON.parse(fs.readFileSync("./versions.json"));
+    } catch (e) {
+        versions = [];
+        fs.writeFileSync("./versions.json", JSON.stringify(versions, null, 2));
+    }
+    return versions;
+}
+
+function hasGameVersion(version) {
+    return getGameVersions().indexOf(version) > -1;
+}
+
+async function download(args) {
     await new Promise((resolve, reject) => {
         let outbuffer = [];
         let errbuffer = [];
         let start = new Date().getTime();
-        const proc = spawn(`${barPath}/../bin/pr-downloader.exe`, ["--filesystem-writepath", barPath, "--download-map", mapname], {
+        const proc = spawn(`${barPath}/../bin/pr-downloader.exe`, ["--filesystem-writepath", barPath].concat(args), {
             cwd: barPath,
             env: Object.assign({}, process.env, {
                 PRD_RAPID_USE_STREAMER: 'false',
@@ -72,25 +89,38 @@ async function downloadMap(mapname) {
     });
 }
 
+async function downloadMap(mapname) {
+    return download(["--download-map", mapname]);
+}
+
+async function downloadGame(gamename) {
+    await download(["--download-game", gamename]);
+    let versions = getGameVersions().concat(gamename);
+    fs.writeFileSync("./versions.json", JSON.stringify(versions, null, 2));
+}
+
 async function analyzeGame(gameFilename) {
     const data = JSON.parse(fs.readFileSync(`./replay_data/${gameFilename}`));
     const outPath = `./analysis_data/${data.id}.csv`;
     if (!fs.existsSync(outPath)) {
-        if (data.gameVersion === barVersion) {
-            // check if the map is there; if not download it!
-            if (!fs.existsSync(`${barPath}/maps/${data.Map.fileName}.sd7`)) {
-                console.log("Need to download ", data.Map.scriptName);
-                await downloadMap(data.Map.scriptName);
-            }
-
-            let analyzed = await analyzeReplay(path.resolve(`./demos/${data.fileName}`), data.engineVersion);
-            if (analyzed) {
-                // copy the results!
-                fs.copyFileSync(`${barPath}/stats.csv`, outPath);
-                fs.unlinkSync(`${barPath}/stats.csv`);
-            }
-            return true;
+        if (!hasGameVersion(data.gameVersion)) {
+            console.log(`Downloading game version: ${data.gameVersion}    used by ${gameFilename} in ${data.fileName}`);
+            await downloadGame(data.gameVersion);
         }
+
+        // check if the map is there; if not download it!
+        if (!fs.existsSync(`${barPath}/maps/${data.Map.fileName}.sd7`)) {
+            console.log("Need to download ", data.Map.scriptName);
+            await downloadMap(data.Map.scriptName);
+        }
+
+        let analyzed = await analyzeReplay(path.resolve(`./demos/${data.fileName}`), data.engineVersion);
+        if (analyzed) {
+            // copy the results!
+            fs.copyFileSync(`${barPath}/stats.csv`, outPath);
+            fs.unlinkSync(`${barPath}/stats.csv`);
+        }
+        return true;
     }
     return false;
 }
