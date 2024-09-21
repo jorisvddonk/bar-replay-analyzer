@@ -17,12 +17,6 @@ if (!barVersion) {
 }
 console.log("BAR game version: " + barVersion);
 
-let engineVersion = process.env.BAR_ENGINE_VERSION;
-if (!engineVersion) {
-    engineVersion = "105.1.1-2577-g77272e9 BAR105";
-}
-console.log("BAR engine version: " + engineVersion);
-
 
 function getScript(replayPath) {
     return `[modoptions]
@@ -82,14 +76,14 @@ async function analyzeGame(gameFilename) {
     const data = JSON.parse(fs.readFileSync(`./replay_data/${gameFilename}`));
     const outPath = `./analysis_data/${data.id}.csv`;
     if (!fs.existsSync(outPath)) {
-        if (data.gameVersion === barVersion && data.engineVersion === engineVersion) {
+        if (data.gameVersion === barVersion) {
             // check if the map is there; if not download it!
             if (!fs.existsSync(`${barPath}/maps/${data.Map.fileName}.sd7`)) {
                 console.log("Need to download ", data.Map.scriptName);
                 await downloadMap(data.Map.scriptName);
             }
 
-            let analyzed = await analyzeReplay(path.resolve(`./demos/${data.fileName}`));
+            let analyzed = await analyzeReplay(path.resolve(`./demos/${data.fileName}`), data.engineVersion);
             if (analyzed) {
                 // copy the results!
                 fs.copyFileSync(`${barPath}/stats.csv`, outPath);
@@ -105,18 +99,23 @@ let ignoredReplays = [
     // add absolute path to .sdfz files here to ignore them!
 ]
 
-async function analyzeReplay(replayFilePath) {
+async function analyzeReplay(replayFilePath, engineVersion) {
     if (ignoredReplays.indexOf(replayFilePath) > -1 ) {
         console.log("Skipping replay ", replayFilePath);
         return false;
     }
     fs.writeFileSync(barPath + "/_analyze_script.txt", getScript(replayFilePath));
+    let exePath = `${barPath}/engine/${engineVersion.split(' ')[0].toLowerCase()} bar/spring-headless.exe`;
+    if (!fs.existsSync(exePath)) {
+        console.log("Skipping replay ", replayFilePath, " -- reason: Engine version not found: ", engineVersion);
+        return false;
+    }
     console.log("analyzing ", replayFilePath);
     await new Promise((resolve, reject) => {
         let outbuffer = [];
         let errbuffer = [];
         let start = new Date().getTime();
-        const proc = spawn(`${barPath}/engine/${engineVersion.split(' ')[0].toLowerCase()} bar/spring-headless.exe`, ["--write-dir", barPath, "--isolation", "./_analyze_script.txt"], {
+        const proc = spawn(exePath, ["--write-dir", barPath, "--isolation", "./_analyze_script.txt"], {
             cwd: barPath
         });
         proc.stdout.on('data', (data) => {
