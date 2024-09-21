@@ -63,7 +63,7 @@ async function main() {
     while (i >= 0) {
         let downloaded = await download(data.data[i]);
         if (downloaded) {
-            await sleep(1000);
+            await sleep(5000);
             console.log(i);
         }
         i--;
