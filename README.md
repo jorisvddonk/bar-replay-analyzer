@@ -2,6 +2,8 @@
 
 Tools for analyzing [Beyond All Reason](https://www.beyondallreason.info/) replays. Currently only works on Windows, but with a bit of tweaking of the scripts you should be able to make it work on Linux.
 
+Because replays only contain command lists and chat logs, the entire game will have to be simulated to be able to extract useful statistics from a replay. Thankfully, BAR by default ships with a headless version of the engine, `spring-headless`, which can be used for exactly such a purpose!
+
 ## NOTE
 
 The tool currently expects an analysis widget to be installed in your Beyond All Reason installation, which should create a .csv file, `stats.csv` at the end and then close the game (via `Spring.Quit()`). No such widget is automatically installed nor currently available in this repository; you're expected to create one and add it yourself!
