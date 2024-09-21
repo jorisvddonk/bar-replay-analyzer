@@ -123,7 +123,7 @@ async function analyzeReplay(replayFilePath, engineVersion) {
             if (outbuffer.length > 10) {
                 outbuffer.shift();
             }
-            if (new Date().getTime() - start > 90000) {
+            if (new Date().getTime() - start > 120000) {
                 process.stdout.write(data);
             }
         });
@@ -132,7 +132,7 @@ async function analyzeReplay(replayFilePath, engineVersion) {
             if (errbuffer.length > 10) {
                 errbuffer.shift();
             }   
-            if (new Date().getTime() - start > 90000) {
+            if (new Date().getTime() - start > 120000) {
                 process.stderr.write(data);
             }
         });
