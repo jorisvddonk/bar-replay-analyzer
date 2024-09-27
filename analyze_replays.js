@@ -4,6 +4,8 @@
 const fs = require('fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
+const util = require('node:util');
+const exec = util.promisify(require('node:child_process').exec);
 
 let barPath = process.env.BAR_PATH;
 if (!barPath) {
@@ -93,9 +95,24 @@ async function downloadGame(gamename) {
     fs.writeFileSync("./versions.json", JSON.stringify(versions, null, 2));
 }
 
+async function makeJunction(folder, tgt) {
+    const f = await exec(`mklink /J "${path.resolve(folder)}" "${path.resolve(tgt)}"`);
+    console.log(f.stdout);
+    console.log(f.stderr);
+}
+
 async function analyzeGame(gameFilename) {
     const data = JSON.parse(fs.readFileSync(`./replay_data/${gameFilename}`));
     const outPath = `./analysis_data/${data.id}.csv`;
+    const dataFolder = fs.mkdtempSync(`${path.resolve("./datadirs")}/data`);
+    await makeJunction(`${dataFolder}/engine`, `${barPath}/engine`);
+    await makeJunction(`${dataFolder}/pool`, `${barPath}/pool`);
+    await makeJunction(`${dataFolder}/packages`, `${barPath}/packages`);
+    await makeJunction(`${dataFolder}/rapid`, `${barPath}/rapid`);
+    await makeJunction(`${dataFolder}/maps`, `${barPath}/maps`);
+    await makeJunction(`${dataFolder}/games`, `${barPath}/games`);
+    await makeJunction(`${dataFolder}/LuaUI`, `${barPath}/LuaUI`);
+
     if (!fs.existsSync(outPath)) {
         if (!hasGameVersion(data.gameVersion)) {
             console.log(`Downloading game version: ${data.gameVersion}    used by ${gameFilename} in ${data.fileName}`);
@@ -108,11 +125,11 @@ async function analyzeGame(gameFilename) {
             await downloadMap(data.Map.scriptName);
         }
 
-        let analyzed = await analyzeReplay(path.resolve(`./demos/${data.fileName}`), data.engineVersion);
+        let analyzed = await analyzeReplay(path.resolve(dataFolder), path.resolve(`./demos/${data.fileName}`), data.engineVersion);
         if (analyzed) {
             // copy the results!
-            fs.copyFileSync(`${barPath}/stats.csv`, outPath);
-            fs.unlinkSync(`${barPath}/stats.csv`);
+            fs.copyFileSync(`${dataFolder}/stats.csv`, outPath);
+            fs.unlinkSync(`${dataFolder}/stats.csv`);
         }
         return true;
     }
@@ -123,13 +140,13 @@ let ignoredReplays = [
     // add absolute path to .sdfz files here to ignore them!
 ]
 
-async function analyzeReplay(replayFilePath, engineVersion) {
+async function analyzeReplay(dataDir, replayFilePath, engineVersion) {
     if (ignoredReplays.indexOf(replayFilePath) > -1 ) {
         console.log("Skipping replay ", replayFilePath);
         return false;
     }
-    fs.writeFileSync(barPath + "/_analyze_script.txt", getScript(replayFilePath));
-    let exePath = `${barPath}/engine/${engineVersion.split(' ')[0].toLowerCase()} bar/spring-headless.exe`;
+    fs.writeFileSync(dataDir + "/_analyze_script.txt", getScript(replayFilePath));
+    let exePath = `${dataDir}/engine/${engineVersion.split(' ')[0].toLowerCase()} bar/spring-headless.exe`;
     if (!fs.existsSync(exePath)) {
         console.log("Skipping replay ", replayFilePath, " -- reason: Engine version not found: ", engineVersion);
         return false;
@@ -139,8 +156,8 @@ async function analyzeReplay(replayFilePath, engineVersion) {
         let outbuffer = [];
         let errbuffer = [];
         let start = new Date().getTime();
-        const proc = spawn(exePath, ["--write-dir", barPath, "--isolation", "./_analyze_script.txt"], {
-            cwd: barPath
+        const proc = spawn(exePath, ["--write-dir", dataDir, "--isolation", "./_analyze_script.txt"], {
+            cwd: dataDir
         });
         proc.stdout.on('data', (data) => {
             outbuffer.push(data);
@@ -174,8 +191,14 @@ async function analyzeReplay(replayFilePath, engineVersion) {
 
 
 async function main() {
+    if (process.platform !== "win32") {
+        throw new Error("Only Windows is supported at the moment!");
+    }
     if (!fs.existsSync("analysis_data")) {
         fs.mkdirSync("analysis_data");
+    }
+    if (!fs.existsSync("datadirs")) {
+        fs.mkdirSync("datadirs");
     }
     const games = fs.readdirSync("./replay_data");
     let i = games.length - 1;
