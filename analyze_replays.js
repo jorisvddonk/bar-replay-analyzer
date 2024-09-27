@@ -1,6 +1,8 @@
 // Analyze BAR replays!
 // Uses the replay analyzer widget.
 
+const NUM_WORKERS = 1; // increase this to spawn more parallel workers!
+
 const fs = require('fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
@@ -13,8 +15,14 @@ if (!barPath) {
 }
 console.log("BAR path: " + barPath);
 
+let workers = new Set();
+let port = 31337;
 
 function getScript(replayPath) {
+    port += 1;
+    if (port >= 32337) {
+        port = 31337;
+    }
     return `[modoptions]
 {
 	MinSpeed = 9999;
@@ -23,6 +31,7 @@ function getScript(replayPath) {
 [game]  
 {  
     demofile="${replayPath}";
+    hostport=${port};
 }`
 }
 
@@ -97,23 +106,24 @@ async function downloadGame(gamename) {
 
 async function makeJunction(folder, tgt) {
     const f = await exec(`mklink /J "${path.resolve(folder)}" "${path.resolve(tgt)}"`);
-    console.log(f.stdout);
-    console.log(f.stderr);
+    //console.log(f.stdout);
+    //console.log(f.stderr);
 }
 
 async function analyzeGame(gameFilename) {
     const data = JSON.parse(fs.readFileSync(`./replay_data/${gameFilename}`));
     const outPath = `./analysis_data/${data.id}.csv`;
-    const dataFolder = fs.mkdtempSync(`${path.resolve("./datadirs")}/data`);
-    await makeJunction(`${dataFolder}/engine`, `${barPath}/engine`);
-    await makeJunction(`${dataFolder}/pool`, `${barPath}/pool`);
-    await makeJunction(`${dataFolder}/packages`, `${barPath}/packages`);
-    await makeJunction(`${dataFolder}/rapid`, `${barPath}/rapid`);
-    await makeJunction(`${dataFolder}/maps`, `${barPath}/maps`);
-    await makeJunction(`${dataFolder}/games`, `${barPath}/games`);
-    await makeJunction(`${dataFolder}/LuaUI`, `${barPath}/LuaUI`);
 
     if (!fs.existsSync(outPath)) {
+        const dataFolder = fs.mkdtempSync(`${path.resolve("./datadirs")}/data`);
+        await makeJunction(`${dataFolder}/engine`, `${barPath}/engine`);
+        await makeJunction(`${dataFolder}/pool`, `${barPath}/pool`);
+        await makeJunction(`${dataFolder}/packages`, `${barPath}/packages`);
+        await makeJunction(`${dataFolder}/rapid`, `${barPath}/rapid`);
+        await makeJunction(`${dataFolder}/maps`, `${barPath}/maps`);
+        await makeJunction(`${dataFolder}/games`, `${barPath}/games`);
+        await makeJunction(`${dataFolder}/LuaUI`, `${barPath}/LuaUI`);
+        
         if (!hasGameVersion(data.gameVersion)) {
             console.log(`Downloading game version: ${data.gameVersion}    used by ${gameFilename} in ${data.fileName}`);
             await downloadGame(data.gameVersion);
@@ -189,6 +199,17 @@ async function analyzeReplay(dataDir, replayFilePath, engineVersion) {
     return true;
 }
 
+function sleep(duration) {
+    return new Promise(res => setTimeout(res, duration));
+}
+
+async function slotFree() {
+    while(workers.size >= NUM_WORKERS) {
+        //console.log("-------SLEEPING-------", workers.size);
+        await sleep(100);
+    }
+    //console.log("done sleeping", workers.size);
+}
 
 async function main() {
     if (process.platform !== "win32") {
@@ -203,10 +224,17 @@ async function main() {
     const games = fs.readdirSync("./replay_data");
     let i = games.length - 1;
     while (i >= 0) {
-        let analyzed = await analyzeGame(games[i]);
-        if (analyzed) {
-            console.log(i);
-        }
+        await slotFree();
+        let gameFilename = games[i];
+        workers.add(gameFilename);
+        ((num) => {
+            analyzeGame(gameFilename).then(result => {
+                console.log(num, result, gameFilename);
+                workers.delete(gameFilename);
+            }).catch(e => {
+                console.log(num, "had errors!!!!");
+            });
+        })(i);
         i--;
     }
 }
