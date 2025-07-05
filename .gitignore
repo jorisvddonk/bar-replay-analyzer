@@ -5,3 +5,4 @@ data.json
 versions.json
 datadirs/
 node_modules/
+stats.sqlite*

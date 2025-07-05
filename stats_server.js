@@ -1,6 +1,8 @@
 const net = require('net');
 const express = require('express');
 const cors = require('cors');
+const sqlite3 = require('sqlite3').verbose();
+const path = require('path');
 
 // command line usage:
 const usage = `Usage:
@@ -12,21 +14,27 @@ Options:
 --log            Enable logging of received data (default: false)
 --stats          Enable collection of stats (default: true)
 --web            Enable web server (default: true)
+--db <path>      Specify SQLite database path (default: ./stats.sqlite)
+--no-db          Disable database storage (default: enabled)
 `;
 
 
 
 /* Stats format over the wire:
+HELLO,replayID // emitted when a new replay starts
 UNITINFO,replayID,frameNum,status,unitID,unitDefID,unitTeam,unitName // status is either 'created', 'finished', or 'destroyed'
 PLAYERSTATS,replayID,frameNum,'playerStats',playerID,teamID,allyTeamID,metalIncomePerSecond,energyIncomePerSecond,metalStored,energyStored,activeUnits,unitsDied,unitsKilled,unitsCaptured,damageDealt,damageReceived
+BYE,replayID // emitted when the replay has ended
 
 example: 
+HELLO,c0b6f1662dfda4d42e07d471a5a68f16
 PLAYERSTATS,c0b6f1662dfda4d42e07d471a5a68f16,3720,playerStats,0,0,0,241.112488,1200,11.2847166,6.00932026,20,0,0,0,0,0
 PLAYERSTATS,c0b6f1662dfda4d42e07d471a5a68f16,3720,playerStats,1,1,1,537.328369,1250,0.67817938,8.01397991,13,0,0,0,0,0
 PLAYERSTATS,c0b6f1662dfda4d42e07d471a5a68f16,3730,playerStats,0,0,0,240.35556,1200,10.0805655,6.00932026,20,0,0,0,0,0
 PLAYERSTATS,c0b6f1662dfda4d42e07d471a5a68f16,3730,playerStats,1,1,1,540.581543,1250,1.73333347,8.01397991,13,0,0,0,0,0
 UNITINFO,c0b6f1662dfda4d42e07d471a5a68f16,3697,finished,20740,99,0,armflea
 UNITINFO,c0b6f1662dfda4d42e07d471a5a68f16,3698,created,13662,321,1,corfav
+BYE,c0b6f1662dfda4d42e07d471a5a68f16
 */
 
 // collect stats per replay
@@ -37,6 +45,163 @@ const collectStats = process.argv.includes('--stats') ? true : !process.argv.inc
 
 // check if --log option is provided
 const logData = process.argv.includes('--log');
+
+// Database configuration
+const enableDatabase = !process.argv.includes('--no-db');
+const dbPath = process.argv.includes('--db') ? 
+    process.argv[process.argv.indexOf('--db') + 1] : 
+    './stats.sqlite';
+
+let db = null;
+const activeTransactions = new Map(); // Track active transactions per replay
+
+// Cleanup function for orphaned replays
+function cleanupOrphanedReplays() {
+    if (!enableDatabase || !db) return;
+    
+    // Find replays that have been active for more than 3 hours without activity
+    const threeHoursAgo = new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString();
+    
+    db.all(`SELECT replay_id FROM replay_sessions 
+            WHERE status = 'active' AND last_activity < ?`, 
+           [threeHoursAgo], (err, rows) => {
+        if (err) {
+            console.error('--Error finding orphaned replays:', err.message);
+            return;
+        }
+        
+        if (rows.length > 0) {
+            console.log(`--Found ${rows.length} orphaned replay(s), cleaning up...`);
+            
+            rows.forEach(row => {
+                const replayID = row.replay_id;
+                
+                db.serialize(() => {
+                    // Clean up data for orphaned replay
+                    db.run(`DELETE FROM player_stats WHERE replay_id = ?`, [replayID]);
+                    db.run(`DELETE FROM unit_info WHERE replay_id = ?`, [replayID]);
+                    db.run(`UPDATE replay_sessions SET status = 'orphaned' WHERE replay_id = ?`, [replayID]);
+                    
+                    // Remove from active transactions
+                    if (activeTransactions.has(replayID)) {
+                        activeTransactions.delete(replayID);
+                    }
+                    
+                    console.log(`--Cleaned up orphaned replay: ${replayID}`);
+                });
+            });
+        }
+    });
+}
+
+// Run cleanup every 30 minutes
+setInterval(cleanupOrphanedReplays, 30 * 60 * 1000);
+
+// Initialize database if enabled
+if (enableDatabase) {
+    db = new sqlite3.Database(dbPath, (err) => {
+        if (err) {
+            console.error('--Error opening database:', err.message);
+            process.exit(1);
+        }
+        console.log(`--Connected to SQLite database: ${dbPath}`);
+    });
+
+    // Configure SQLite for maximum performance with delayed writes
+    db.serialize(() => {
+        // Use WAL mode for better concurrent access and performance
+        db.run("PRAGMA journal_mode = WAL");
+        // Increase cache size for better performance
+        db.run("PRAGMA cache_size = 10000");
+        // Use OFF synchronous mode for maximum performance (data loss risk on system crash)
+        db.run("PRAGMA synchronous = OFF");
+        // Disable auto-checkpoint for better performance
+        db.run("PRAGMA wal_autocheckpoint = 0");
+    });
+
+    // Create tables if they don't exist
+    db.serialize(() => {
+        // Replay tracking table
+        db.run(`CREATE TABLE IF NOT EXISTS replay_sessions (
+            replay_id TEXT PRIMARY KEY,
+            started_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            status TEXT DEFAULT 'active',
+            last_activity DATETIME DEFAULT CURRENT_TIMESTAMP
+        )`);
+
+        // Player stats table
+        db.run(`CREATE TABLE IF NOT EXISTS player_stats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            replay_id TEXT NOT NULL,
+            frame_num INTEGER NOT NULL,
+            player_id INTEGER NOT NULL,
+            team_id INTEGER NOT NULL,
+            ally_team_id INTEGER NOT NULL,
+            metal_income_per_second REAL NOT NULL,
+            energy_income_per_second REAL NOT NULL,
+            metal_stored REAL NOT NULL,
+            energy_stored REAL NOT NULL,
+            active_units INTEGER NOT NULL,
+            units_died INTEGER NOT NULL,
+            units_killed INTEGER NOT NULL,
+            units_captured INTEGER NOT NULL,
+            damage_dealt REAL NOT NULL,
+            damage_received REAL NOT NULL,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )`);
+
+        // Unit info table
+        db.run(`CREATE TABLE IF NOT EXISTS unit_info (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            replay_id TEXT NOT NULL,
+            frame_num INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            unit_id INTEGER NOT NULL,
+            unit_def_id INTEGER NOT NULL,
+            unit_team INTEGER NOT NULL,
+            unit_name TEXT NOT NULL,
+            timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+        )`);
+
+        // Create indexes for better query performance
+        db.run(`CREATE INDEX IF NOT EXISTS idx_replay_sessions_status ON replay_sessions(status)`);
+        db.run(`CREATE INDEX IF NOT EXISTS idx_player_stats_replay_id ON player_stats(replay_id)`);
+        db.run(`CREATE INDEX IF NOT EXISTS idx_unit_info_replay_id ON unit_info(replay_id)`);
+        db.run(`CREATE INDEX IF NOT EXISTS idx_player_stats_frame ON player_stats(frame_num)`);
+        db.run(`CREATE INDEX IF NOT EXISTS idx_unit_info_frame ON unit_info(frame_num)`);
+    });
+}
+
+// Helper function to transform database rows to camelCase format
+function transformPlayerStats(rows) {
+    return rows.map(row => ({
+        frameNum: row.frame_num,
+        playerID: row.player_id,
+        teamID: row.team_id,
+        allyTeamID: row.ally_team_id,
+        metalIncomePerSecond: row.metal_income_per_second,
+        energyIncomePerSecond: row.energy_income_per_second,
+        metalStored: row.metal_stored,
+        energyStored: row.energy_stored,
+        activeUnits: row.active_units,
+        unitsDied: row.units_died,
+        unitsKilled: row.units_killed,
+        unitsCaptured: row.units_captured,
+        damageDealt: row.damage_dealt,
+        damageReceived: row.damage_received
+    }));
+}
+
+function transformUnitInfo(rows) {
+    return rows.map(row => ({
+        frameNum: row.frame_num,
+        status: row.status,
+        unitID: row.unit_id,
+        unitDefID: row.unit_def_id,
+        unitTeam: row.unit_team,
+        unitName: row.unit_name
+    }));
+}
 
 // log help if needed
 if (process.argv.includes('--help')) {
@@ -51,22 +216,122 @@ function processStatsLine(line) {
     
     // Split the line by commas
     const parts = line.split(',');
-    if (parts.length < 3) {
+    if (parts.length < 2) {
         console.error('--Invalid stats line:', line);
         return;
     }
     // Extract the type and replay ID
     const type = parts[0];
     const replayID = parts[1];
-    // Initialize the replay stats if not already done
-    if (!replayStats[replayID]) {
+    
+    // Initialize the replay stats if not already done (only if database is disabled)
+    if (!enableDatabase && !replayStats[replayID]) {
         replayStats[replayID] = {
             playerStats: [],
             unitInfo: []
         };
     }
     // Process based on the type
-    if (type === 'PLAYERSTATS') {
+    if (type === 'HELLO') {
+        // Clear previous stats for this replay ID from both memory and database
+        console.log(`--Starting new replay session: ${replayID}`);
+        
+        // Clear from memory (only if database is disabled)
+        if (!enableDatabase && replayStats[replayID]) {
+            delete replayStats[replayID];
+        }
+        
+        // Clear from database and start new transaction if enabled
+        if (enableDatabase && db) {
+            // End any existing transaction for this replay
+            if (activeTransactions.has(replayID)) {
+                console.log(`--Committing previous transaction for replay: ${replayID}`);
+                db.run('COMMIT', (err) => {
+                    if (err) console.error('--Error committing previous transaction:', err.message);
+                });
+                activeTransactions.delete(replayID);
+            }
+            
+            // Clear existing data and start new session
+            db.serialize(() => {
+                // Clean up any existing data
+                db.run(`DELETE FROM player_stats WHERE replay_id = ?`, [replayID], function(err) {
+                    if (err) {
+                        console.error('--Error clearing player stats from database:', err.message);
+                    } else if (this.changes > 0) {
+                        console.log(`--Cleared ${this.changes} player stats records for replay ${replayID}`);
+                    }
+                });
+                
+                db.run(`DELETE FROM unit_info WHERE replay_id = ?`, [replayID], function(err) {
+                    if (err) {
+                        console.error('--Error clearing unit info from database:', err.message);
+                    } else if (this.changes > 0) {
+                        console.log(`--Cleared ${this.changes} unit info records for replay ${replayID}`);
+                    }
+                });
+                
+                // Insert or update replay session tracking
+                db.run(`INSERT OR REPLACE INTO replay_sessions (replay_id, started_at, status, last_activity) 
+                        VALUES (?, CURRENT_TIMESTAMP, 'active', CURRENT_TIMESTAMP)`, 
+                       [replayID], (err) => {
+                    if (err) {
+                        console.error('--Error tracking replay session:', err.message);
+                    } else {
+                        console.log(`--Started tracking session for replay: ${replayID}`);
+                    }
+                });
+                
+                // Start new transaction for this replay
+                db.run('BEGIN TRANSACTION', (err) => {
+                    if (err) {
+                        console.error('--Error starting transaction:', err.message);
+                    } else {
+                        activeTransactions.set(replayID, true);
+                        console.log(`--Started transaction for replay: ${replayID}`);
+                    }
+                });
+            });
+        }
+    }
+    else if (type === 'BYE') {
+        // Commit transaction to disk for this replay
+        console.log(`--Ending replay session: ${replayID}`);
+        
+        if (enableDatabase && db && activeTransactions.has(replayID)) {
+            db.serialize(() => {
+                // Mark session as completed
+                db.run(`UPDATE replay_sessions SET status = 'completed', last_activity = CURRENT_TIMESTAMP 
+                        WHERE replay_id = ?`, [replayID], (err) => {
+                    if (err) {
+                        console.error('--Error updating replay session status:', err.message);
+                    } else {
+                        console.log(`--Marked replay session as completed: ${replayID}`);
+                    }
+                });
+
+                // Commit the transaction
+                db.run('COMMIT', (err) => {
+                    if (err) {
+                        console.error('--Error committing transaction:', err.message);
+                    } else {
+                        console.log(`--Committed transaction for replay: ${replayID}`);
+                    }
+                });
+                
+                // Force synchronous write to disk
+                db.run('PRAGMA wal_checkpoint(FULL)', (err) => {
+                    if (err) {
+                        console.error('--Error forcing sync to disk:', err.message);
+                    } else {
+                        console.log(`--Forced sync to disk for replay: ${replayID}`);
+                    }
+                });
+            });
+            activeTransactions.delete(replayID);
+        }
+    }
+    else if (type === 'PLAYERSTATS') {
         // Ensure the line has enough parts for player stats
         if (parts.length < 15) {
             console.error('--Invalid PLAYERSTATS line:', line);
@@ -89,7 +354,55 @@ function processStatsLine(line) {
             damageDealt: parseFloat(parts[15]),
             damageReceived: parseFloat(parts[16])
         };
-        replayStats[replayID].playerStats.push(playerStats);
+        
+        // Store in memory only if database is disabled
+        if (!enableDatabase) {
+            if (!replayStats[replayID]) {
+                replayStats[replayID] = { playerStats: [], unitInfo: [] };
+            }
+            replayStats[replayID].playerStats.push(playerStats);
+        }
+
+        // Store in database if enabled
+        if (enableDatabase && db) {
+            // Ensure we have an active transaction for this replay
+            if (!activeTransactions.has(replayID)) {
+                db.run('BEGIN TRANSACTION', (err) => {
+                    if (err) {
+                        console.error('--Error starting transaction:', err.message);
+                    } else {
+                        activeTransactions.set(replayID, true);
+                        console.log(`--Started transaction for replay: ${replayID}`);
+                    }
+                });
+            }
+            
+            // Update last activity for this replay
+            db.run(`UPDATE replay_sessions SET last_activity = CURRENT_TIMESTAMP WHERE replay_id = ?`, 
+                   [replayID], (err) => {
+                if (err) {
+                    console.error('--Error updating replay activity:', err.message);
+                }
+            });
+            
+            const stmt = db.prepare(`INSERT INTO player_stats (
+                replay_id, frame_num, player_id, team_id, ally_team_id,
+                metal_income_per_second, energy_income_per_second, metal_stored, energy_stored,
+                active_units, units_died, units_killed, units_captured, damage_dealt, damage_received
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`);
+            
+            stmt.run([
+                replayID, playerStats.frameNum, playerStats.playerID, playerStats.teamID, playerStats.allyTeamID,
+                playerStats.metalIncomePerSecond, playerStats.energyIncomePerSecond, playerStats.metalStored, playerStats.energyStored,
+                playerStats.activeUnits, playerStats.unitsDied, playerStats.unitsKilled, playerStats.unitsCaptured,
+                playerStats.damageDealt, playerStats.damageReceived
+            ], function(err) {
+                if (err) {
+                    console.error('--Error inserting player stats:', err.message);
+                }
+            });
+            stmt.finalize();
+        }
     }
     else if (type === 'UNITINFO') {
         // Ensure the line has enough parts for unit info
@@ -106,7 +419,51 @@ function processStatsLine(line) {
             unitTeam: parseInt(parts[6], 10),
             unitName: parts.slice(7).join(',') // in case the name contains commas
         };
-        replayStats[replayID].unitInfo.push(unitInfo);
+        
+        // Store in memory only if database is disabled
+        if (!enableDatabase) {
+            if (!replayStats[replayID]) {
+                replayStats[replayID] = { playerStats: [], unitInfo: [] };
+            }
+            replayStats[replayID].unitInfo.push(unitInfo);
+        }
+
+        // Store in database if enabled
+        if (enableDatabase && db) {
+            // Ensure we have an active transaction for this replay
+            if (!activeTransactions.has(replayID)) {
+                db.run('BEGIN TRANSACTION', (err) => {
+                    if (err) {
+                        console.error('--Error starting transaction:', err.message);
+                    } else {
+                        activeTransactions.set(replayID, true);
+                        console.log(`--Started transaction for replay: ${replayID}`);
+                    }
+                });
+            }
+            
+            // Update last activity for this replay
+            db.run(`UPDATE replay_sessions SET last_activity = CURRENT_TIMESTAMP WHERE replay_id = ?`, 
+                   [replayID], (err) => {
+                if (err) {
+                    console.error('--Error updating replay activity:', err.message);
+                }
+            });
+            
+            const stmt = db.prepare(`INSERT INTO unit_info (
+                replay_id, frame_num, status, unit_id, unit_def_id, unit_team, unit_name
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)`);
+            
+            stmt.run([
+                replayID, unitInfo.frameNum, unitInfo.status, unitInfo.unitID,
+                unitInfo.unitDefID, unitInfo.unitTeam, unitInfo.unitName
+            ], function(err) {
+                if (err) {
+                    console.error('--Error inserting unit info:', err.message);
+                }
+            });
+            stmt.finalize();
+        }
     }
     else {
         console.error('--Unknown stats type:', type);
@@ -122,18 +479,27 @@ const server = net.createServer((socket) => {
     // Set the encoding for incoming data (optional)
     socket.setEncoding('utf8');
 
+    // Buffer for incomplete lines
+    let buffer = '';
+
     // Handle incoming data
     socket.on('data', (data) => {
-        // data can contain multiple lines, so we need to process each line
-        const lines = data.toString().split('\n');
-        // Process each line
-        lines.forEach(l => {
-            const line = l.trim();
+        // Add new data to buffer
+        buffer += data.toString();
+        
+        // Process complete lines
+        let lines = buffer.split('\n');
+        
+        // Keep the last incomplete line in buffer
+        buffer = lines.pop() || '';
+        
+        // Process each complete line
+        lines.forEach(line => {
+            line = line.trim();
             if (line === '') {
                 return; // skip empty lines
             }
-            //console.log(`--Received data from ${socket.remoteAddress}:${socket.remotePort}:`);
-            // write without newline
+            
             if (logData) {
                 process.stdout.write(line + '\n');
             }
@@ -143,6 +509,14 @@ const server = net.createServer((socket) => {
 
     // Handle client disconnection
     socket.on('end', () => {
+        // Process any remaining data in buffer
+        if (buffer.trim() !== '') {
+            const line = buffer.trim();
+            if (logData) {
+                process.stdout.write(line + '\n');
+            }
+            processStatsLine(line);
+        }
         console.log(`--Client disconnected: ${socket.remoteAddress}:${socket.remotePort}`);
     });
 
@@ -168,21 +542,276 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 app.get('/stats/all', (req, res) => {
-    // DO NOT RECOMMEND USING THIS IN PRODUCTION, IT RETURNS ALL COLLECTED STATS WHICH CAN BE HUGE
-    res.json(replayStats);
-});
-app.get('/stats/replays', (req, res) => {
-    const replayIDs = Object.keys(replayStats);
-    res.json(replayIDs);
-});
-app.get('/stats/:replayID', (req, res) => {
-    const replayID = req.params.replayID;
-    if (replayStats[replayID]) {
-        res.json(replayStats[replayID]);
+    if (enableDatabase && db) {
+        // Get all data from database
+        db.all(`SELECT DISTINCT replay_id FROM player_stats 
+                UNION 
+                SELECT DISTINCT replay_id FROM unit_info 
+                ORDER BY replay_id`, (err, replayRows) => {
+            if (err) {
+                res.status(500).json({ error: err.message });
+                return;
+            }
+            
+            const allStats = {};
+            let completed = 0;
+            const totalReplays = replayRows.length;
+            
+            if (totalReplays === 0) {
+                res.json(allStats);
+                return;
+            }
+            
+            replayRows.forEach(row => {
+                const replayID = row.replay_id;
+                allStats[replayID] = { playerStats: [], unitInfo: [] };
+                
+                // Get player stats
+                db.all(`SELECT * FROM player_stats WHERE replay_id = ? ORDER BY frame_num, player_id`, 
+                       [replayID], (err, playerStats) => {
+                    if (err) {
+                        res.status(500).json({ error: err.message });
+                        return;
+                    }
+                    
+                    allStats[replayID].playerStats = transformPlayerStats(playerStats);
+                    
+                    // Get unit info
+                    db.all(`SELECT * FROM unit_info WHERE replay_id = ? ORDER BY frame_num`, 
+                           [replayID], (err, unitInfo) => {
+                        if (err) {
+                            res.status(500).json({ error: err.message });
+                            return;
+                        }
+                        
+                        allStats[replayID].unitInfo = transformUnitInfo(unitInfo);
+                        completed++;
+                        
+                        if (completed === totalReplays) {
+                            res.json(allStats);
+                        }
+                    });
+                });
+            });
+        });
     } else {
-        res.status(404).json({ error: 'Replay ID not found' });
+        // Fallback to memory data if database is disabled
+        // DO NOT RECOMMEND USING THIS IN PRODUCTION, IT RETURNS ALL COLLECTED STATS WHICH CAN BE HUGE
+        res.json(replayStats);
     }
 });
+
+app.get('/stats/replays', (req, res) => {
+    if (enableDatabase && db) {
+        // Get replay IDs from database
+        db.all(`SELECT DISTINCT replay_id FROM player_stats 
+                UNION 
+                SELECT DISTINCT replay_id FROM unit_info 
+                ORDER BY replay_id`, (err, rows) => {
+            if (err) {
+                res.status(500).json({ error: err.message });
+                return;
+            }
+            res.json(rows.map(row => row.replay_id));
+        });
+    } else {
+        // Fallback to memory data if database is disabled
+        const replayIDs = Object.keys(replayStats);
+        res.json(replayIDs);
+    }
+});
+
+app.get('/stats/:replayID', (req, res) => {
+    const replayID = req.params.replayID;
+    
+    if (enableDatabase && db) {
+        // Get data from database
+        db.all(`SELECT * FROM player_stats WHERE replay_id = ? ORDER BY frame_num, player_id`, 
+               [replayID], (err, playerStats) => {
+            if (err) {
+                res.status(500).json({ error: err.message });
+                return;
+            }
+            
+            db.all(`SELECT * FROM unit_info WHERE replay_id = ? ORDER BY frame_num`, 
+                   [replayID], (err, unitInfo) => {
+                if (err) {
+                    res.status(500).json({ error: err.message });
+                    return;
+                }
+                
+                if (playerStats.length === 0 && unitInfo.length === 0) {
+                    res.status(404).json({ error: 'Replay ID not found' });
+                } else {
+                    res.json({
+                        playerStats: transformPlayerStats(playerStats),
+                        unitInfo: transformUnitInfo(unitInfo)
+                    });
+                }
+            });
+        });
+    } else {
+        // Fallback to memory data if database is disabled
+        if (replayStats[replayID]) {
+            res.json(replayStats[replayID]);
+        } else {
+            res.status(404).json({ error: 'Replay ID not found' });
+        }
+    }
+});
+
+// Database-based API endpoints (if database is enabled)
+if (enableDatabase && db) {
+    // Get all replay IDs from database
+    app.get('/db/replays', (req, res) => {
+        db.all(`SELECT DISTINCT replay_id FROM player_stats 
+                UNION 
+                SELECT DISTINCT replay_id FROM unit_info 
+                ORDER BY replay_id`, (err, rows) => {
+            if (err) {
+                res.status(500).json({ error: err.message });
+                return;
+            }
+            res.json(rows.map(row => row.replay_id));
+        });
+    });
+
+    // Get player stats for a specific replay from database
+    app.get('/db/stats/:replayID/players', (req, res) => {
+        const replayID = req.params.replayID;
+        db.all(`SELECT * FROM player_stats WHERE replay_id = ? ORDER BY frame_num, player_id`, 
+               [replayID], (err, rows) => {
+            if (err) {
+                res.status(500).json({ error: err.message });
+                return;
+            }
+            res.json(transformPlayerStats(rows));
+        });
+    });
+
+    // Get unit info for a specific replay from database
+    app.get('/db/stats/:replayID/units', (req, res) => {
+        const replayID = req.params.replayID;
+        db.all(`SELECT * FROM unit_info WHERE replay_id = ? ORDER BY frame_num`, 
+               [replayID], (err, rows) => {
+            if (err) {
+                res.status(500).json({ error: err.message });
+                return;
+            }
+            res.json(transformUnitInfo(rows));
+        });
+    });
+
+    // Get combined stats for a specific replay from database
+    app.get('/db/stats/:replayID', (req, res) => {
+        const replayID = req.params.replayID;
+        
+        // Get player stats
+        db.all(`SELECT * FROM player_stats WHERE replay_id = ? ORDER BY frame_num, player_id`, 
+               [replayID], (err, playerStats) => {
+            if (err) {
+                res.status(500).json({ error: err.message });
+                return;
+            }
+            
+            // Get unit info
+            db.all(`SELECT * FROM unit_info WHERE replay_id = ? ORDER BY frame_num`, 
+                   [replayID], (err, unitInfo) => {
+                if (err) {
+                    res.status(500).json({ error: err.message });
+                    return;
+                }
+                
+                res.json({
+                    playerStats: transformPlayerStats(playerStats),
+                    unitInfo: transformUnitInfo(unitInfo)
+                });
+            });
+        });
+    });
+
+    // Get database statistics
+    app.get('/db/info', (req, res) => {
+        db.get(`SELECT COUNT(*) as player_stats_count FROM player_stats`, (err, playerCount) => {
+            if (err) {
+                res.status(500).json({ error: err.message });
+                return;
+            }
+            
+            db.get(`SELECT COUNT(*) as unit_info_count FROM unit_info`, (err, unitCount) => {
+                if (err) {
+                    res.status(500).json({ error: err.message });
+                    return;
+                }
+                
+                db.get(`SELECT COUNT(DISTINCT replay_id) as replay_count FROM (
+                    SELECT replay_id FROM player_stats 
+                    UNION 
+                    SELECT replay_id FROM unit_info
+                )`, (err, replayCount) => {
+                    if (err) {
+                        res.status(500).json({ error: err.message });
+                        return;
+                    }
+                    
+                    db.all(`SELECT status, COUNT(*) as count FROM replay_sessions GROUP BY status`, (err, sessionStats) => {
+                        if (err) {
+                            res.status(500).json({ error: err.message });
+                            return;
+                        }
+                        
+                        res.json({
+                            database_path: dbPath,
+                            player_stats_count: playerCount.player_stats_count,
+                            unit_info_count: unitCount.unit_info_count,
+                            replay_count: replayCount.replay_count,
+                            session_stats: sessionStats
+                        });
+                    });
+                });
+            });
+        });
+    });
+
+    // Get replay session information
+    app.get('/db/sessions', (req, res) => {
+        const status = req.query.status; // optional filter by status
+        let query = 'SELECT * FROM replay_sessions';
+        let params = [];
+        
+        if (status) {
+            query += ' WHERE status = ?';
+            params.push(status);
+        }
+        
+        query += ' ORDER BY started_at DESC';
+        
+        db.all(query, params, (err, rows) => {
+            if (err) {
+                res.status(500).json({ error: err.message });
+                return;
+            }
+            res.json(rows);
+        });
+    });
+
+    // Get active replay sessions
+    app.get('/db/sessions/active', (req, res) => {
+        db.all(`SELECT * FROM replay_sessions WHERE status = 'active' ORDER BY started_at DESC`, (err, rows) => {
+            if (err) {
+                res.status(500).json({ error: err.message });
+                return;
+            }
+            res.json(rows);
+        });
+    });
+
+    // Manually cleanup orphaned replays
+    app.post('/db/cleanup', (req, res) => {
+        cleanupOrphanedReplays();
+        res.json({ message: 'Cleanup initiated' });
+    });
+}
 if (process.argv.includes('--web') ? true : !process.argv.includes('--no-web')) {
     // Enable web server if --web option is provided
     app.use(express.static('web')); // Serve static files from the 'web' directory
@@ -190,4 +819,97 @@ if (process.argv.includes('--web') ? true : !process.argv.includes('--no-web')) 
 const webPort = process.argv.includes('--web-port') ? parseInt(process.argv[process.argv.indexOf('--web-port') + 1], 10) : 3000;
 app.listen(webPort, () => {
     console.log(`--Web server listening on port ${webPort}`);
+});
+
+// Graceful shutdown handling
+process.on('SIGINT', () => {
+    console.log('\n--Received SIGINT, shutting down gracefully...');
+    server.close(() => {
+        console.log('--TCP server closed');
+        if (enableDatabase && db) {
+            // Mark any active sessions as interrupted and commit transactions
+            if (activeTransactions.size > 0) {
+                console.log(`--Committing ${activeTransactions.size} active transactions...`);
+                
+                // Mark active sessions as interrupted
+                db.run(`UPDATE replay_sessions SET status = 'interrupted' WHERE status = 'active'`, (err) => {
+                    if (err) {
+                        console.error('--Error marking sessions as interrupted:', err.message);
+                    }
+                    
+                    // Commit any active transactions
+                    db.run('COMMIT', (err) => {
+                        if (err) {
+                            console.error('--Error committing final transactions:', err.message);
+                        }
+                        db.close((err) => {
+                            if (err) {
+                                console.error('--Error closing database:', err.message);
+                            } else {
+                                console.log('--Database connection closed');
+                            }
+                            process.exit(0);
+                        });
+                    });
+                });
+            } else {
+                db.close((err) => {
+                    if (err) {
+                        console.error('--Error closing database:', err.message);
+                    } else {
+                        console.log('--Database connection closed');
+                    }
+                    process.exit(0);
+                });
+            }
+        } else {
+            process.exit(0);
+        }
+    });
+});
+
+process.on('SIGTERM', () => {
+    console.log('\n--Received SIGTERM, shutting down gracefully...');
+    server.close(() => {
+        console.log('--TCP server closed');
+        if (enableDatabase && db) {
+            // Mark any active sessions as interrupted and commit transactions
+            if (activeTransactions.size > 0) {
+                console.log(`--Committing ${activeTransactions.size} active transactions...`);
+                
+                // Mark active sessions as interrupted
+                db.run(`UPDATE replay_sessions SET status = 'interrupted' WHERE status = 'active'`, (err) => {
+                    if (err) {
+                        console.error('--Error marking sessions as interrupted:', err.message);
+                    }
+                    
+                    // Commit any active transactions
+                    db.run('COMMIT', (err) => {
+                        if (err) {
+                            console.error('--Error committing final transactions:', err.message);
+                        }
+                        db.close((err) => {
+                            if (err) {
+                                console.error('--Error closing database:', err.message);
+                            } else {
+                                console.log('--Database connection closed');
+                            }
+                            process.exit(0);
+                        });
+                    });
+                });
+            } else {
+                db.close((err) => {
+                    if (err) {
+                        console.error('--Error closing database:', err.message);
+                    } else {
+                        console.log('--Database connection closed');
+                    }
+                    process.exit(0);
+                });
+            }
+        } else {
+            process.exit(0);
+        }
+    });
 });
