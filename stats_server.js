@@ -22,12 +22,14 @@ Options:
 
 /* Stats format over the wire:
 HELLO,replayID // emitted when a new replay starts
+INFO,replayID,<raw JSON data> // emitted with all available replay info (e.g. game version, engine version, etc.)
 UNITINFO,replayID,frameNum,status,unitID,unitDefID,unitTeam,unitName // status is either 'created', 'finished', or 'destroyed'
 PLAYERSTATS,replayID,frameNum,'playerStats',playerID,teamID,allyTeamID,metalIncomePerSecond,energyIncomePerSecond,metalStored,energyStored,activeUnits,unitsDied,unitsKilled,unitsCaptured,damageDealt,damageReceived
 BYE,replayID // emitted when the replay has ended
 
 example: 
 HELLO,c0b6f1662dfda4d42e07d471a5a68f16
+INFO,c0b6f1662dfda4d42e07d471a5a68f16,{"id":"c0b6f1662dfda4d42e07d471a5a68f16","fileName":"2024-09-23_20-51-03-602.... SHORTENED FOR BREVITY ...}
 PLAYERSTATS,c0b6f1662dfda4d42e07d471a5a68f16,3720,playerStats,0,0,0,241.112488,1200,11.2847166,6.00932026,20,0,0,0,0,0
 PLAYERSTATS,c0b6f1662dfda4d42e07d471a5a68f16,3720,playerStats,1,1,1,537.328369,1250,0.67817938,8.01397991,13,0,0,0,0,0
 PLAYERSTATS,c0b6f1662dfda4d42e07d471a5a68f16,3730,playerStats,0,0,0,240.35556,1200,10.0805655,6.00932026,20,0,0,0,0,0
@@ -192,6 +194,16 @@ function transformPlayerStats(rows) {
     }));
 }
 
+// Helper function to parse replay info JSON
+function parseReplayInfo(infoJson) {
+    try {
+        return JSON.parse(infoJson);
+    } catch (e) {
+        console.error('--Error parsing replay info JSON:', e.message);
+        return { error: 'Invalid JSON format', raw: infoJson };
+    }
+}
+
 function transformUnitInfo(rows) {
     return rows.map(row => ({
         frameNum: row.frame_num,
@@ -301,6 +313,73 @@ function processStatsLine(line) {
             });
             
             activeReplays.delete(replayID);
+        }
+    }
+    else if (type === 'INFO') {
+        // Ensure the line has enough parts for info
+        if (parts.length < 3) {
+            console.error('--Invalid INFO line:', line);
+            return;
+        }
+        // Extract info
+        const replayInfo = {
+            replayID: parts[1],
+            data: parts.slice(2).join(',') // since the remainder of the data contains commas
+        };
+
+        // Store in memory if database is disabled
+        if (!enableDatabase) {
+            if (!replayStats[replayID]) {
+                replayStats[replayID] = { playerStats: [], unitInfo: [], info: null };
+            }
+            try {
+                // Parse the JSON data
+                replayStats[replayID].info = JSON.parse(replayInfo.data);
+            } catch (e) {
+                console.error(`--Error parsing INFO JSON for replay ${replayID}:`, e.message);
+                // Store as string if parsing fails
+                replayStats[replayID].info = replayInfo.data;
+            }
+        }
+
+        // Store in database if enabled
+        if (enableDatabase && db) {
+            // First, check if we need to create a replay_info table
+            db.serialize(() => {
+                // Create replay_info table if it doesn't exist
+                db.run(`CREATE TABLE IF NOT EXISTS replay_info (
+                    replay_id TEXT PRIMARY KEY,
+                    info_json TEXT NOT NULL,
+                    timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+                )`, (err) => {
+                    if (err) {
+                        console.error('--Error creating replay_info table:', err.message);
+                        return;
+                    }
+                    
+                    // Insert or replace the replay info
+                    const stmt = db.prepare(`INSERT OR REPLACE INTO replay_info (
+                        replay_id, info_json
+                    ) VALUES (?, ?)`);
+                    
+                    stmt.run([replayID, replayInfo.data], function(err) {
+                        if (err) {
+                            console.error('--Error inserting replay info:', err.message);
+                        } else if (logData) {
+                            console.log(`--Stored INFO data for replay ${replayID}`);
+                        }
+                    });
+                    stmt.finalize();
+                    
+                    // Update last activity for this replay
+                    db.run(`UPDATE replay_sessions SET last_activity = CURRENT_TIMESTAMP WHERE replay_id = ?`, 
+                           [replayID], (err) => {
+                        if (err) {
+                            console.error('--Error updating replay activity:', err.message);
+                        }
+                    });
+                });
+            });
         }
     }
     else if (type === 'PLAYERSTATS') {
@@ -495,6 +574,8 @@ app.get('/stats/all', (req, res) => {
         db.all(`SELECT DISTINCT replay_id FROM player_stats 
                 UNION 
                 SELECT DISTINCT replay_id FROM unit_info 
+                UNION
+                SELECT DISTINCT replay_id FROM replay_info
                 ORDER BY replay_id`, (err, replayRows) => {
             if (err) {
                 res.status(500).json({ error: err.message });
@@ -512,7 +593,7 @@ app.get('/stats/all', (req, res) => {
             
             replayRows.forEach(row => {
                 const replayID = row.replay_id;
-                allStats[replayID] = { playerStats: [], unitInfo: [] };
+                allStats[replayID] = { playerStats: [], unitInfo: [], info: null };
                 
                 // Get player stats
                 db.all(`SELECT * FROM player_stats WHERE replay_id = ? ORDER BY frame_num, player_id`, 
@@ -533,11 +614,22 @@ app.get('/stats/all', (req, res) => {
                         }
                         
                         allStats[replayID].unitInfo = transformUnitInfo(unitInfo);
-                        completed++;
                         
-                        if (completed === totalReplays) {
-                            res.json(allStats);
-                        }
+                        // Get replay info
+                        db.get(`SELECT info_json FROM replay_info WHERE replay_id = ?`, 
+                               [replayID], (err, infoRow) => {
+                            if (err) {
+                                console.error('--Error fetching replay info:', err.message);
+                            } else if (infoRow && infoRow.info_json) {
+                                allStats[replayID].info = parseReplayInfo(infoRow.info_json);
+                            }
+                            
+                            completed++;
+                            
+                            if (completed === totalReplays) {
+                                res.json(allStats);
+                            }
+                        });
                     });
                 });
             });
@@ -555,6 +647,8 @@ app.get('/stats/replays', (req, res) => {
         db.all(`SELECT DISTINCT replay_id FROM player_stats 
                 UNION 
                 SELECT DISTINCT replay_id FROM unit_info 
+                UNION
+                SELECT DISTINCT replay_id FROM replay_info
                 ORDER BY replay_id`, (err, rows) => {
             if (err) {
                 res.status(500).json({ error: err.message });
@@ -588,14 +682,29 @@ app.get('/stats/:replayID', (req, res) => {
                     return;
                 }
                 
-                if (playerStats.length === 0 && unitInfo.length === 0) {
-                    res.status(404).json({ error: 'Replay ID not found' });
-                } else {
-                    res.json({
-                        playerStats: transformPlayerStats(playerStats),
-                        unitInfo: transformUnitInfo(unitInfo)
-                    });
-                }
+                // Get replay info if available
+                db.get(`SELECT info_json FROM replay_info WHERE replay_id = ?`, 
+                       [replayID], (err, infoRow) => {
+                    if (err) {
+                        console.error('--Error fetching replay info:', err.message);
+                    }
+                    
+                    if (playerStats.length === 0 && unitInfo.length === 0 && (!infoRow || !infoRow.info_json)) {
+                        res.status(404).json({ error: 'Replay ID not found' });
+                    } else {
+                        const result = {
+                            playerStats: transformPlayerStats(playerStats),
+                            unitInfo: transformUnitInfo(unitInfo)
+                        };
+                        
+                        // Add info if available
+                        if (infoRow && infoRow.info_json) {
+                            result.info = parseReplayInfo(infoRow.info_json);
+                        }
+                        
+                        res.json(result);
+                    }
+                });
             });
         });
     } else {
@@ -650,6 +759,25 @@ if (enableDatabase && db) {
         });
     });
 
+    // Get replay info for a specific replay from database
+    app.get('/db/stats/:replayID/info', (req, res) => {
+        const replayID = req.params.replayID;
+        db.get(`SELECT info_json FROM replay_info WHERE replay_id = ?`, 
+               [replayID], (err, row) => {
+            if (err) {
+                res.status(500).json({ error: err.message });
+                return;
+            }
+            
+            if (!row) {
+                res.status(404).json({ error: 'Replay info not found' });
+                return;
+            }
+            
+            res.json(parseReplayInfo(row.info_json));
+        });
+    });
+
     // Get combined stats for a specific replay from database
     app.get('/db/stats/:replayID', (req, res) => {
         const replayID = req.params.replayID;
@@ -670,9 +798,24 @@ if (enableDatabase && db) {
                     return;
                 }
                 
-                res.json({
-                    playerStats: transformPlayerStats(playerStats),
-                    unitInfo: transformUnitInfo(unitInfo)
+                // Get replay info
+                db.get(`SELECT info_json FROM replay_info WHERE replay_id = ?`, 
+                       [replayID], (err, infoRow) => {
+                    if (err) {
+                        console.error('--Error fetching replay info:', err.message);
+                    }
+                    
+                    const result = {
+                        playerStats: transformPlayerStats(playerStats),
+                        unitInfo: transformUnitInfo(unitInfo)
+                    };
+                    
+                    // Add info if available
+                    if (infoRow && infoRow.info_json) {
+                        result.info = parseReplayInfo(infoRow.info_json);
+                    }
+                    
+                    res.json(result);
                 });
             });
         });
@@ -692,28 +835,38 @@ if (enableDatabase && db) {
                     return;
                 }
                 
-                db.get(`SELECT COUNT(DISTINCT replay_id) as replay_count FROM (
-                    SELECT replay_id FROM player_stats 
-                    UNION 
-                    SELECT replay_id FROM unit_info
-                )`, (err, replayCount) => {
+                db.get(`SELECT COUNT(*) as replay_info_count FROM replay_info`, (err, infoCount) => {
                     if (err) {
-                        res.status(500).json({ error: err.message });
-                        return;
+                        // Table might not exist yet
+                        infoCount = { replay_info_count: 0 };
                     }
                     
-                    db.all(`SELECT status, COUNT(*) as count FROM replay_sessions GROUP BY status`, (err, sessionStats) => {
+                    db.get(`SELECT COUNT(DISTINCT replay_id) as replay_count FROM (
+                        SELECT replay_id FROM player_stats 
+                        UNION 
+                        SELECT replay_id FROM unit_info
+                        UNION
+                        SELECT replay_id FROM replay_info
+                    )`, (err, replayCount) => {
                         if (err) {
                             res.status(500).json({ error: err.message });
                             return;
                         }
                         
-                        res.json({
-                            database_path: dbPath,
-                            player_stats_count: playerCount.player_stats_count,
-                            unit_info_count: unitCount.unit_info_count,
-                            replay_count: replayCount.replay_count,
-                            session_stats: sessionStats
+                        db.all(`SELECT status, COUNT(*) as count FROM replay_sessions GROUP BY status`, (err, sessionStats) => {
+                            if (err) {
+                                res.status(500).json({ error: err.message });
+                                return;
+                            }
+                            
+                            res.json({
+                                database_path: dbPath,
+                                player_stats_count: playerCount.player_stats_count,
+                                unit_info_count: unitCount.unit_info_count,
+                                replay_info_count: infoCount.replay_info_count || 0,
+                                replay_count: replayCount.replay_count,
+                                session_stats: sessionStats
+                            });
                         });
                     });
                 });

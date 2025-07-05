@@ -21,8 +21,14 @@
             border-radius: 5px;
             box-shadow: 0 0 10px rgba(0,0,0,0.1);
         }
-        h1, h2, h3 {
+        h1, h2, h3, h4 {
             color: #333;
+        }
+        h4 {
+            margin-top: 15px;
+            margin-bottom: 10px;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 5px;
         }
         .chart-container {
             position: relative;
@@ -83,6 +89,30 @@
         tr:hover {
             background-color: #f5f5f5;
         }
+        #replayInfoSection {
+            background-color: #f9f9f9;
+            border-radius: 5px;
+            border: 1px solid #eee;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+        #replayInfoContent p {
+            margin: 5px 0;
+        }
+        #replayInfoContent ul {
+            margin: 5px 0;
+            padding-left: 20px;
+        }
+        .replay-info-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+        @media (max-width: 768px) {
+            .replay-info-grid {
+                grid-template-columns: 1fr;
+            }
+        }
     </style>
 </head>
 <body>
@@ -98,6 +128,11 @@
 
         <div id="statsContainer" style="display: none;">
             <h2>Statistics for Replay: <span id="currentReplayId"></span></h2>
+            
+            <div id="replayInfoSection" style="margin-bottom: 20px; padding: 15px; background-color: #f9f9f9; border-radius: 5px; border: 1px solid #eee;">
+                <h3>Replay Information</h3>
+                <div id="replayInfoContent">Loading replay information...</div>
+            </div>
             
             <div class="stats-controls">
                 <button id="showMetalBtn" class="active">Metal</button>
@@ -241,7 +276,7 @@
             replayIds.forEach(replayId => {
                 const option = document.createElement('option');
                 option.value = replayId;
-                option.textContent = `Replay: ${replayId.substring(0, 8)}...`;
+                option.textContent = `Replay: ${replayId}`;
                 dropdown.appendChild(option);
             });
         }
@@ -266,6 +301,27 @@
                 // Process and display the data
                 processReplayData(replayData);
                 
+                // Display replay info if available
+                if (replayData.info) {
+                    displayReplayInfo(replayData.info);
+                } else {
+                    // Try to fetch info separately if not included in the main response
+                    try {
+                        const infoResponse = await fetch(`/db/stats/${replayId}/info`);
+                        if (infoResponse.ok) {
+                            const infoData = await infoResponse.json();
+                            displayReplayInfo(infoData);
+                        } else {
+                            document.getElementById('replayInfoContent').innerHTML = 
+                                '<p>No detailed information available for this replay.</p>';
+                        }
+                    } catch (infoError) {
+                        console.error('Error fetching replay info:', infoError);
+                        document.getElementById('replayInfoContent').innerHTML = 
+                            '<p>Failed to load replay information.</p>';
+                    }
+                }
+                
                 // Show the stats container
                 document.getElementById('statsContainer').style.display = 'block';
                 document.getElementById('loading').style.display = 'none';
@@ -273,6 +329,129 @@
                 console.error('Error fetching replay stats:', error);
                 document.getElementById('loading').textContent = 'Error loading replay data. Please try again later.';
             }
+        }
+        
+        // Display replay information
+        function displayReplayInfo(info) {
+            const infoContainer = document.getElementById('replayInfoContent');
+            
+            // Format date
+            let startTime = 'Unknown';
+            if (info.startTime) {
+                const date = new Date(info.startTime);
+                startTime = date.toLocaleString();
+            }
+            
+            // Format duration
+            let duration = 'Unknown';
+            if (info.durationMs) {
+                const minutes = Math.floor(info.durationMs / 60000);
+                const seconds = Math.floor((info.durationMs % 60000) / 1000);
+                duration = `${minutes}m ${seconds}s`;
+            }
+            
+            // Create HTML content
+            let html = '<div class="replay-info-grid" style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">';
+            
+            // Basic info section
+            html += '<div class="basic-info">';
+            html += `<p><strong>Game:</strong> ${info.gameVersion || 'Unknown'}</p>`;
+            html += `<p><strong>Engine:</strong> ${info.engineVersion || 'Unknown'}</p>`;
+            html += `<p><strong>Map:</strong> ${info.Map?.scriptName || 'Unknown'}</p>`;
+            html += `<p><strong>Date:</strong> ${startTime}</p>`;
+            html += `<p><strong>Duration:</strong> ${duration}</p>`;
+            html += '</div>';
+            
+            // Players section
+            html += '<div class="players-info">';
+            html += '<h4>Players</h4>';
+            
+            if (info.AllyTeams && info.AllyTeams.length > 0) {
+                info.AllyTeams.forEach(allyTeam => {
+                    const isWinner = allyTeam.winningTeam ? '(Winner)' : '';
+                    html += `<p><strong>Team ${allyTeam.allyTeamId} ${isWinner}</strong></p>`;
+                    
+                    if (allyTeam.Players && allyTeam.Players.length > 0) {
+                        html += '<ul style="margin-top: 5px;">';
+                        allyTeam.Players.forEach(player => {
+                            const color = `rgb(${player.rgbColor.r}, ${player.rgbColor.g}, ${player.rgbColor.b})`;
+                            html += `<li style="margin-bottom: 5px;">
+                                <span style="display: inline-block; width: 12px; height: 12px; background-color: ${color}; margin-right: 5px;"></span>
+                                ${player.name} (${player.faction}) - Skill: ${player.skill || 'N/A'}
+                            </li>`;
+                        });
+                        html += '</ul>';
+                    }
+                    
+                    if (allyTeam.AIs && allyTeam.AIs.length > 0) {
+                        html += '<p>AIs:</p>';
+                        html += '<ul>';
+                        allyTeam.AIs.forEach(ai => {
+                            html += `<li>${ai.name || 'AI'} (${ai.shortName || 'Unknown'})</li>`;
+                        });
+                        html += '</ul>';
+                    }
+                });
+            } else {
+                html += '<p>No player information available</p>';
+            }
+            html += '</div>';
+            
+            // Awards section if available
+            if (info.awards) {
+                html += '<div class="awards-info" style="grid-column: span 2;">';
+                html += '<h4>Awards</h4>';
+                html += '<ul style="columns: 2;">';
+                
+                if (info.awards.mostResourcesProduced) {
+                    const team = info.awards.mostResourcesProduced.teamId;
+                    const value = info.awards.mostResourcesProduced.value.toLocaleString();
+                    html += `<li><strong>Most Resources:</strong> Team ${team} (${value})</li>`;
+                }
+                
+                if (info.awards.mostDamageTaken) {
+                    const team = info.awards.mostDamageTaken.teamId;
+                    const value = info.awards.mostDamageTaken.value.toLocaleString();
+                    html += `<li><strong>Most Damage Taken:</strong> Team ${team} (${value})</li>`;
+                }
+                
+                if (info.awards.econDestroyed) {
+                    info.awards.econDestroyed.forEach(award => {
+                        if (award.teamId >= 0) {
+                            html += `<li><strong>Economy Destroyed:</strong> Team ${award.teamId} (${award.value.toLocaleString()})</li>`;
+                        }
+                    });
+                }
+                
+                if (info.awards.fightingUnitsDestroyed) {
+                    info.awards.fightingUnitsDestroyed.forEach(award => {
+                        if (award.teamId >= 0) {
+                            html += `<li><strong>Units Destroyed:</strong> Team ${award.teamId} (${award.value.toLocaleString()})</li>`;
+                        }
+                    });
+                }
+                
+                html += '</ul>';
+                html += '</div>';
+            }
+            
+            html += '</div>';
+            
+            // Add a "View Raw Data" button
+            html += `<div style="margin-top: 15px;">
+                <button id="toggleRawDataBtn" style="padding: 5px 10px; cursor: pointer;">Show Raw Data</button>
+                <pre id="rawDataContainer" style="display: none; margin-top: 10px; background: #f0f0f0; padding: 10px; border-radius: 4px; overflow: auto; max-height: 300px;">${JSON.stringify(info, null, 2)}</pre>
+            </div>`;
+            
+            infoContainer.innerHTML = html;
+            
+            // Add event listener for the raw data toggle button
+            document.getElementById('toggleRawDataBtn').addEventListener('click', function() {
+                const rawDataContainer = document.getElementById('rawDataContainer');
+                const isHidden = rawDataContainer.style.display === 'none';
+                rawDataContainer.style.display = isHidden ? 'block' : 'none';
+                this.textContent = isHidden ? 'Hide Raw Data' : 'Show Raw Data';
+            });
         }
         
         // Process the replay data and create charts

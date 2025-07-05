@@ -133,6 +133,7 @@ async function analyzeGame(gameFilename) {
 replay_info_host = "127.0.0.1"; -- controls what IP address stats are sent to
 replay_info_port = 12406; -- controls what port stats are sent to
 replay_info_send_stats_frames = 10; -- controls how often stats are sent to the server (negative = never, 1 = every frame, 30 = every 30 frames, etc.)
+replay_info_raw_json = "${JSON.stringify(data).replace(/\\/g, "\\\\").replace(/"/g, "\\\"")}"; -- raw JSON data from the replay BUT ESCAPED FOR LUA
 -- data from the JSON file:
 gameVersion = "${data.gameVersion}";
 engineVersion = "${data.engineVersion}";

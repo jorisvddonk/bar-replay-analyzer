@@ -192,6 +192,9 @@ function widget:Initialize()
 
         log("<Statistics logger> Sending initial HELLO message")
         sendToSocket("HELLO," .. replay_info.id .. "\n")
+
+        log("<Statistics logger> Sending INFO message containing all available replay info")
+        sendToSocket("INFO," .. replay_info.id .. "," .. replay_info.replay_info_raw_json .. "\n")
     else
         Spring.Echo("<Statistics logger> We are not headless; removing statistics logger widget!")
         widgetHandler:RemoveWidget()
