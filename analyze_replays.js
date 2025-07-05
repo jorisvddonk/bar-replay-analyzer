@@ -122,7 +122,22 @@ async function analyzeGame(gameFilename) {
         await makeJunction(`${dataFolder}/rapid`, `${barPath}/rapid`);
         await makeJunction(`${dataFolder}/maps`, `${barPath}/maps`);
         await makeJunction(`${dataFolder}/games`, `${barPath}/games`);
-        await makeJunction(`${dataFolder}/LuaUI`, `${barPath}/LuaUI`);
+        fs.mkdirSync(`${dataFolder}/LuaUI`);
+        fs.mkdirSync(`${dataFolder}/LuaUI/Widgets`);
+        await makeJunction(`${dataFolder}/LuaUI/Config`, `${barPath}/LuaUI/Config`);
+        await makeJunction(`${dataFolder}/LuaUI/Fonts`, `${barPath}/LuaUI/Fonts`);
+        fs.copyFileSync(path.resolve(__dirname, "stats_test.lua"), `${dataFolder}/LuaUI/Widgets/stats_test.lua`);
+        // write a simple lua script containing replay info converted from the JSON data
+        const luaScript = `
+replay_info_host = "127.0.0.1"; -- controls what IP address stats are sent to
+replay_info_port = 12406; -- controls what port stats are sent to
+-- data from the JSON file:
+gameVersion = "${data.gameVersion}";
+engineVersion = "${data.engineVersion}";
+id = "${data.id}";
+fileName = "${data.fileName}";
+`;
+        fs.writeFileSync(`${dataFolder}/replay_info.lua`, luaScript);
         
         if (!hasGameVersion(data.gameVersion)) {
             console.log(`Downloading game version: ${data.gameVersion}    used by ${gameFilename} in ${data.fileName}`);
@@ -161,7 +176,7 @@ async function analyzeReplay(dataDir, replayFilePath, engineVersion) {
         console.log("Skipping replay ", replayFilePath, " -- reason: Engine version not found: ", engineVersion);
         return false;
     }
-    console.log("analyzing ", replayFilePath);
+    console.log("analyzing ", replayFilePath, " in folder ", dataDir, " with engine ", engineVersion, " at ", exePath);
     await new Promise((resolve, reject) => {
         let outbuffer = [];
         let errbuffer = [];
@@ -175,7 +190,7 @@ async function analyzeReplay(dataDir, replayFilePath, engineVersion) {
                 outbuffer.shift();
             }
             if (new Date().getTime() - start > 120000) {
-                process.stdout.write(data);
+                //process.stdout.write(data);
             }
         });
         proc.stderr.on('data', (data) => {
@@ -184,7 +199,7 @@ async function analyzeReplay(dataDir, replayFilePath, engineVersion) {
                 errbuffer.shift();
             }   
             if (new Date().getTime() - start > 120000) {
-                process.stderr.write(data);
+                //process.stderr.write(data);
             }
         });
         proc.on('close', (code) => {
@@ -233,6 +248,7 @@ async function main() {
                 workers.delete(gameFilename);
             }).catch(e => {
                 console.log(num, "had errors!!!!");
+                //console.log(e);
             });
         })(i);
         i--;
