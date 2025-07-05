@@ -211,7 +211,7 @@ function widget:GameFrame(frame)
                 local playerStats = string.format("%d,playerStats,%d,%d,%d,%f,%f,%f,%f,%d,%d,%d,%d,%f,%f\n",
                     frameNum, playerID, teamID, allyTeamID, metalIncome, energyIncome, metalStored, energyStored,
                     activeUnits, unitsDied, unitsKilled, unitsCapturedBy, damageDealt, damageReceived)
-                sendStat(playerStats, true)
+                sendStat(playerStats, true, "PLAYERSTATS")
             end
         end
     end
@@ -245,27 +245,27 @@ function sendToSocket(message)
     end
 end
 
-function sendStat(message, socketOnly)
+function sendStat(message, socketOnly, prefix)
     if not socketOnly then
         file:write(message)
         file:flush()
     end
-    sendToSocket(replay_info.id .. "," .. message)
+    sendToSocket(prefix .. "," .. replay_info.id .. "," .. message)
 end
 
 function widget:UnitCreated(unitID, unitDefID, unitTeam)
     --log("Found a new unit: " .. unitID  .. " - " .. unitDefID .. " -- " .. UnitDefs[unitDefID].name)
-    sendStat(frameNum .. ",created," .. unitID  .. "," .. unitDefID .. "," .. unitTeam .. "," .. UnitDefs[unitDefID].name .. "\n")
+    sendStat(frameNum .. ",created," .. unitID  .. "," .. unitDefID .. "," .. unitTeam .. "," .. UnitDefs[unitDefID].name .. "\n", false, "UNITINFO")
 end
 
 function widget:UnitFinished(unitID, unitDefID, unitTeam)
     --log("Found a new unit: " .. unitID  .. " - " .. unitDefID .. " -- " .. UnitDefs[unitDefID].name)
-    sendStat(frameNum .. ",finished," .. unitID  .. "," .. unitDefID .. "," .. unitTeam .. "," .. UnitDefs[unitDefID].name .. "\n")
+    sendStat(frameNum .. ",finished," .. unitID  .. "," .. unitDefID .. "," .. unitTeam .. "," .. UnitDefs[unitDefID].name .. "\n", false, "UNITINFO")
 end
 
 function widget:UnitDestroyed(unitID, unitDefID, unitTeam, attackerID, attackerDefID, attackerTeam)
     --log("Unit destroyed" .. unitID  .. " - " .. unitDefID .. " -- " .. UnitDefs[unitDefID].name)
-    sendStat(frameNum .. ",destroyed," .. unitID  .. "," .. unitDefID .. "," .. unitTeam .. "," .. UnitDefs[unitDefID].name .. "\n")
+    sendStat(frameNum .. ",destroyed," .. unitID  .. "," .. unitDefID .. "," .. unitTeam .. "," .. UnitDefs[unitDefID].name .. "\n", false, "UNITINFO")
 end
 
 function widget:Update()
