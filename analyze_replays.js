@@ -1,7 +1,8 @@
 // Analyze BAR replays!
 // Uses the replay analyzer widget.
 
-const NUM_WORKERS = 1; // increase this to spawn more parallel workers!
+// `--num-workers` option can be used to control how many replays are analyzed in parallel.
+const NUM_WORKERS = process.argv.includes('--num-workers') ? parseInt(process.argv[process.argv.indexOf('--num-workers') + 1]) : 1;
 
 const fs = require('fs');
 const path = require('node:path');
