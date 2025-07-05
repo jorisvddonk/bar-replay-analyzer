@@ -365,7 +365,7 @@ function processStatsLine(line) {
                     stmt.run([replayID, replayInfo.data], function(err) {
                         if (err) {
                             console.error('--Error inserting replay info:', err.message);
-                        } else if (logData) {
+                        } else {
                             console.log(`--Stored INFO data for replay ${replayID}`);
                         }
                     });
