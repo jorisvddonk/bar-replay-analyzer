@@ -1,0 +1,918 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BAR Replay Statistics</title>
+    <!-- Include Chart.js for graphs -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 20px;
+            background-color: #f5f5f5;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background-color: white;
+            padding: 20px;
+            border-radius: 5px;
+            box-shadow: 0 0 10px rgba(0,0,0,0.1);
+        }
+        h1, h2, h3 {
+            color: #333;
+        }
+        .chart-container {
+            position: relative;
+            height: 400px;
+            margin-bottom: 30px;
+        }
+        select {
+            padding: 8px;
+            margin-bottom: 20px;
+            width: 300px;
+        }
+        .loading {
+            text-align: center;
+            padding: 20px;
+            font-style: italic;
+            color: #666;
+        }
+        .stats-controls {
+            margin-bottom: 20px;
+            display: flex;
+            gap: 10px;
+        }
+        .stats-controls button {
+            padding: 8px 15px;
+            background-color: #f0f0f0;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        .stats-controls button:hover {
+            background-color: #e0e0e0;
+        }
+        .stats-controls button.active {
+            background-color: #4CAF50;
+            color: white;
+            border-color: #4CAF50;
+        }
+        .unit-info-container {
+            max-height: 400px;
+            overflow-y: auto;
+            margin-bottom: 30px;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+        th, td {
+            padding: 8px 12px;
+            text-align: left;
+            border-bottom: 1px solid #ddd;
+        }
+        th {
+            background-color: #f2f2f2;
+            position: sticky;
+            top: 0;
+        }
+        tr:hover {
+            background-color: #f5f5f5;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>BAR Replay Statistics</h1>
+        
+        <div id="replaySelector">
+            <h2>Select a Replay</h2>
+            <select id="replayDropdown">
+                <option value="">Loading replays...</option>
+            </select>
+        </div>
+
+        <div id="statsContainer" style="display: none;">
+            <h2>Statistics for Replay: <span id="currentReplayId"></span></h2>
+            
+            <div class="stats-controls">
+                <button id="showMetalBtn" class="active">Metal</button>
+                <button id="showEnergyBtn">Energy</button>
+                <button id="showUnitsBtn">Units</button>
+                <button id="showDamageBtn">Damage</button>
+                <button id="showAllBtn">Show All</button>
+            </div>
+            
+            <div id="metalSection">
+                <h3>Metal Income Per Second</h3>
+                <div class="chart-container">
+                    <canvas id="metalIncomeChart"></canvas>
+                </div>
+                
+                <h3>Metal Stored</h3>
+                <div class="chart-container">
+                    <canvas id="metalStoredChart"></canvas>
+                </div>
+            </div>
+            
+            <div id="energySection" style="display: none;">
+                <h3>Energy Income Per Second</h3>
+                <div class="chart-container">
+                    <canvas id="energyIncomeChart"></canvas>
+                </div>
+                
+                <h3>Energy Stored</h3>
+                <div class="chart-container">
+                    <canvas id="energyStoredChart"></canvas>
+                </div>
+            </div>
+            
+            <div id="unitsSection" style="display: none;">
+                <h3>Active Units</h3>
+                <div class="chart-container">
+                    <canvas id="activeUnitsChart"></canvas>
+                </div>
+                
+                <h3>Units Created vs Destroyed</h3>
+                <div class="chart-container">
+                    <canvas id="unitLifecycleChart"></canvas>
+                </div>
+            </div>
+            
+            <div id="damageSection" style="display: none;">
+                <h3>Damage Dealt vs Received</h3>
+                <div class="chart-container">
+                    <canvas id="damageChart"></canvas>
+                </div>
+                
+                <h3>Units Killed vs Lost</h3>
+                <div class="chart-container">
+                    <canvas id="unitsKilledChart"></canvas>
+                </div>
+            </div>
+            
+            <div id="unitInfoSection">
+                <h3>Unit Information</h3>
+                <div class="unit-info-container">
+                    <table id="unitInfoTable">
+                        <thead>
+                            <tr>
+                                <th>Team</th>
+                                <th>Unit Type</th>
+                                <th>Created</th>
+                                <th>Destroyed</th>
+                                <th>Finished</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <!-- Unit info will be populated here -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+        
+        <div id="loading" class="loading">
+            Select a replay to view statistics
+        </div>
+    </div>
+
+    <script>
+        // Global variables to store charts
+        let metalIncomeChart, energyIncomeChart, activeUnitsChart, damageChart;
+        let metalStoredChart, energyStoredChart, unitLifecycleChart, unitsKilledChart;
+        let currentReplayData = null;
+        
+        // Initialize the application when the page loads
+        document.addEventListener('DOMContentLoaded', () => {
+            // Fetch the list of available replays
+            fetchReplayList();
+            
+            // Set up event listener for replay selection
+            document.getElementById('replayDropdown').addEventListener('change', (event) => {
+                const replayId = event.target.value;
+                if (replayId) {
+                    fetchReplayStats(replayId);
+                } else {
+                    hideStats();
+                }
+            });
+            
+            // Set up event listeners for section buttons
+            document.getElementById('showMetalBtn').addEventListener('click', () => showSection('metal'));
+            document.getElementById('showEnergyBtn').addEventListener('click', () => showSection('energy'));
+            document.getElementById('showUnitsBtn').addEventListener('click', () => showSection('units'));
+            document.getElementById('showDamageBtn').addEventListener('click', () => showSection('damage'));
+            document.getElementById('showAllBtn').addEventListener('click', showAllSections);
+        });
+        
+        // Fetch the list of available replays from the server
+        async function fetchReplayList() {
+            try {
+                const response = await fetch('/stats/replays');
+                if (!response.ok) {
+                    throw new Error(`HTTP error! Status: ${response.status}`);
+                }
+                
+                const replayIds = await response.json();
+                populateReplayDropdown(replayIds);
+            } catch (error) {
+                console.error('Error fetching replay list:', error);
+                document.getElementById('loading').textContent = 'Error loading replays. Please try again later.';
+            }
+        }
+        
+        // Populate the replay dropdown with available replays
+        function populateReplayDropdown(replayIds) {
+            const dropdown = document.getElementById('replayDropdown');
+            dropdown.innerHTML = '';
+            
+            // Add a default option
+            const defaultOption = document.createElement('option');
+            defaultOption.value = '';
+            defaultOption.textContent = 'Select a replay...';
+            dropdown.appendChild(defaultOption);
+            
+            // Add options for each replay
+            replayIds.forEach(replayId => {
+                const option = document.createElement('option');
+                option.value = replayId;
+                option.textContent = `Replay: ${replayId.substring(0, 8)}...`;
+                dropdown.appendChild(option);
+            });
+        }
+        
+        // Fetch statistics for a specific replay
+        async function fetchReplayStats(replayId) {
+            document.getElementById('loading').textContent = 'Loading replay data...';
+            document.getElementById('statsContainer').style.display = 'none';
+            
+            try {
+                const response = await fetch(`/stats/${replayId}`);
+                if (!response.ok) {
+                    throw new Error(`HTTP error! Status: ${response.status}`);
+                }
+                
+                const replayData = await response.json();
+                currentReplayData = replayData;
+                
+                // Display the replay ID
+                document.getElementById('currentReplayId').textContent = replayId;
+                
+                // Process and display the data
+                processReplayData(replayData);
+                
+                // Show the stats container
+                document.getElementById('statsContainer').style.display = 'block';
+                document.getElementById('loading').style.display = 'none';
+            } catch (error) {
+                console.error('Error fetching replay stats:', error);
+                document.getElementById('loading').textContent = 'Error loading replay data. Please try again later.';
+            }
+        }
+        
+        // Process the replay data and create charts
+        function processReplayData(replayData) {
+            // Destroy existing charts if they exist
+            if (metalIncomeChart) metalIncomeChart.destroy();
+            if (energyIncomeChart) energyIncomeChart.destroy();
+            if (activeUnitsChart) activeUnitsChart.destroy();
+            if (damageChart) damageChart.destroy();
+            if (metalStoredChart) metalStoredChart.destroy();
+            if (energyStoredChart) energyStoredChart.destroy();
+            if (unitLifecycleChart) unitLifecycleChart.destroy();
+            if (unitsKilledChart) unitsKilledChart.destroy();
+            
+            // Process player stats
+            const playerStats = replayData.playerStats;
+            if (!playerStats || playerStats.length === 0) {
+                document.getElementById('loading').textContent = 'No player statistics available for this replay.';
+                return;
+            }
+            
+            // Group stats by player and frame
+            const playerGroups = {};
+            playerStats.forEach(stat => {
+                const playerId = stat.playerID;
+                if (!playerGroups[playerId]) {
+                    playerGroups[playerId] = [];
+                }
+                playerGroups[playerId].push(stat);
+            });
+            
+            // Sort each player's stats by frame number
+            Object.keys(playerGroups).forEach(playerId => {
+                playerGroups[playerId].sort((a, b) => a.frameNum - b.frameNum);
+            });
+            
+            // Create datasets for each chart
+            createMetalIncomeChart(playerGroups);
+            createEnergyIncomeChart(playerGroups);
+            createActiveUnitsChart(playerGroups);
+            createDamageChart(playerGroups);
+            createMetalStoredChart(playerGroups);
+            createEnergyStoredChart(playerGroups);
+            createUnitLifecycleChart(playerGroups);
+            createUnitsKilledChart(playerGroups);
+            
+            // Process unit info
+            processUnitInfo(replayData.unitInfo);
+            
+            // Show the metal section by default
+            showSection('metal');
+        }
+
+        // Create the metal stored chart
+        function createMetalStoredChart(playerGroups) {
+            const ctx = document.getElementById('metalStoredChart').getContext('2d');
+            const datasets = [];
+            const colors = ['rgba(75, 192, 192, 1)', 'rgba(255, 99, 132, 1)', 'rgba(54, 162, 235, 1)', 'rgba(255, 206, 86, 1)'];
+            
+            Object.keys(playerGroups).forEach((playerId, index) => {
+                const playerData = playerGroups[playerId];
+                datasets.push({
+                    label: `Player ${playerId} (Team ${playerData[0].teamID})`,
+                    data: playerData.map(stat => ({
+                        x: stat.frameNum / 30, // Convert frames to seconds
+                        y: stat.metalStored
+                    })),
+                    borderColor: colors[index % colors.length],
+                    backgroundColor: colors[index % colors.length].replace('1)', '0.2)'),
+                    fill: false,
+                    tension: 0.1
+                });
+            });
+            
+            metalStoredChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    datasets: datasets
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            type: 'linear',
+                            title: {
+                                display: true,
+                                text: 'Time (seconds)'
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Metal Stored'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        
+        // Create the energy stored chart
+        function createEnergyStoredChart(playerGroups) {
+            const ctx = document.getElementById('energyStoredChart').getContext('2d');
+            const datasets = [];
+            const colors = ['rgba(75, 192, 192, 1)', 'rgba(255, 99, 132, 1)', 'rgba(54, 162, 235, 1)', 'rgba(255, 206, 86, 1)'];
+            
+            Object.keys(playerGroups).forEach((playerId, index) => {
+                const playerData = playerGroups[playerId];
+                datasets.push({
+                    label: `Player ${playerId} (Team ${playerData[0].teamID})`,
+                    data: playerData.map(stat => ({
+                        x: stat.frameNum / 30, // Convert frames to seconds
+                        y: stat.energyStored
+                    })),
+                    borderColor: colors[index % colors.length],
+                    backgroundColor: colors[index % colors.length].replace('1)', '0.2)'),
+                    fill: false,
+                    tension: 0.1
+                });
+            });
+            
+            energyStoredChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    datasets: datasets
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            type: 'linear',
+                            title: {
+                                display: true,
+                                text: 'Time (seconds)'
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Energy Stored'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        
+        // Create the unit lifecycle chart (created vs destroyed)
+        function createUnitLifecycleChart(playerGroups) {
+            const ctx = document.getElementById('unitLifecycleChart').getContext('2d');
+            const datasets = [];
+            const colors = ['rgba(75, 192, 192, 1)', 'rgba(255, 99, 132, 1)', 'rgba(54, 162, 235, 1)', 'rgba(255, 206, 86, 1)'];
+            
+            Object.keys(playerGroups).forEach((playerId, index) => {
+                const playerData = playerGroups[playerId];
+                
+                // Calculate cumulative units created and destroyed
+                let unitsCreated = 0;
+                let unitsDestroyed = 0;
+                const createdData = [];
+                const destroyedData = [];
+                
+                playerData.forEach(stat => {
+                    // Assuming each stat has a frameNum and we can calculate units created/destroyed from it
+                    // This is a simplification - you might need to adjust based on your actual data
+                    unitsCreated += stat.unitsDied || 0; // Using unitsDied as a proxy for units created
+                    unitsDestroyed += stat.unitsKilled || 0; // Using unitsKilled as a proxy for units destroyed
+                    
+                    createdData.push({
+                        x: stat.frameNum / 30,
+                        y: unitsCreated
+                    });
+                    
+                    destroyedData.push({
+                        x: stat.frameNum / 30,
+                        y: unitsDestroyed
+                    });
+                });
+                
+                // Units created dataset
+                datasets.push({
+                    label: `Player ${playerId} - Units Created`,
+                    data: createdData,
+                    borderColor: colors[index % colors.length],
+                    backgroundColor: 'transparent',
+                    fill: false,
+                    tension: 0.1
+                });
+                
+                // Units destroyed dataset
+                datasets.push({
+                    label: `Player ${playerId} - Units Destroyed`,
+                    data: destroyedData,
+                    borderColor: colors[index % colors.length].replace('1)', '0.5)'),
+                    backgroundColor: 'transparent',
+                    borderDash: [5, 5],
+                    fill: false,
+                    tension: 0.1
+                });
+            });
+            
+            unitLifecycleChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    datasets: datasets
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            type: 'linear',
+                            title: {
+                                display: true,
+                                text: 'Time (seconds)'
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Unit Count'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        
+        // Create the units killed vs lost chart
+        function createUnitsKilledChart(playerGroups) {
+            const ctx = document.getElementById('unitsKilledChart').getContext('2d');
+            const datasets = [];
+            const colors = ['rgba(75, 192, 192, 1)', 'rgba(255, 99, 132, 1)', 'rgba(54, 162, 235, 1)', 'rgba(255, 206, 86, 1)'];
+            
+            Object.keys(playerGroups).forEach((playerId, index) => {
+                const playerData = playerGroups[playerId];
+                
+                // Units killed dataset
+                datasets.push({
+                    label: `Player ${playerId} - Units Killed`,
+                    data: playerData.map(stat => ({
+                        x: stat.frameNum / 30,
+                        y: stat.unitsKilled
+                    })),
+                    borderColor: colors[index % colors.length],
+                    backgroundColor: 'transparent',
+                    fill: false,
+                    tension: 0.1
+                });
+                
+                // Units lost dataset
+                datasets.push({
+                    label: `Player ${playerId} - Units Lost`,
+                    data: playerData.map(stat => ({
+                        x: stat.frameNum / 30,
+                        y: stat.unitsDied
+                    })),
+                    borderColor: colors[index % colors.length].replace('1)', '0.5)'),
+                    backgroundColor: 'transparent',
+                    borderDash: [5, 5],
+                    fill: false,
+                    tension: 0.1
+                });
+            });
+            
+            unitsKilledChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    datasets: datasets
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            type: 'linear',
+                            title: {
+                                display: true,
+                                text: 'Time (seconds)'
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Unit Count'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        
+        // Process unit information
+        function processUnitInfo(unitInfo) {
+            if (!unitInfo || unitInfo.length === 0) {
+                document.getElementById('unitInfoTable').innerHTML = '<tr><td colspan="5">No unit information available</td></tr>';
+                return;
+            }
+            
+            // Group units by team and unit name
+            const unitsByTeamAndType = {};
+            
+            unitInfo.forEach(unit => {
+                const teamId = unit.unitTeam;
+                const unitName = unit.unitName;
+                const key = `${teamId}-${unitName}`;
+                
+                if (!unitsByTeamAndType[key]) {
+                    unitsByTeamAndType[key] = {
+                        team: teamId,
+                        unitName: unitName,
+                        created: 0,
+                        destroyed: 0,
+                        finished: 0
+                    };
+                }
+                
+                // Update counts based on status
+                switch (unit.status) {
+                    case 'created':
+                        unitsByTeamAndType[key].created++;
+                        break;
+                    case 'destroyed':
+                        unitsByTeamAndType[key].destroyed++;
+                        break;
+                    case 'finished':
+                        unitsByTeamAndType[key].finished++;
+                        break;
+                }
+            });
+            
+            // Convert to array and sort by team, then by unit name
+            const unitSummary = Object.values(unitsByTeamAndType).sort((a, b) => {
+                if (a.team !== b.team) {
+                    return a.team - b.team;
+                }
+                return a.unitName.localeCompare(b.unitName);
+            });
+            
+            // Populate the table
+            const tableBody = document.getElementById('unitInfoTable').getElementsByTagName('tbody')[0];
+            tableBody.innerHTML = '';
+            
+            unitSummary.forEach(unit => {
+                const row = document.createElement('tr');
+                
+                const teamCell = document.createElement('td');
+                teamCell.textContent = unit.team;
+                row.appendChild(teamCell);
+                
+                const nameCell = document.createElement('td');
+                nameCell.textContent = unit.unitName;
+                row.appendChild(nameCell);
+                
+                const createdCell = document.createElement('td');
+                createdCell.textContent = unit.created;
+                row.appendChild(createdCell);
+                
+                const destroyedCell = document.createElement('td');
+                destroyedCell.textContent = unit.destroyed;
+                row.appendChild(destroyedCell);
+                
+                const finishedCell = document.createElement('td');
+                finishedCell.textContent = unit.finished;
+                row.appendChild(finishedCell);
+                
+                tableBody.appendChild(row);
+            });
+        }
+        
+        // Create the metal income chart
+        function createMetalIncomeChart(playerGroups) {
+            const ctx = document.getElementById('metalIncomeChart').getContext('2d');
+            const datasets = [];
+            const colors = ['rgba(75, 192, 192, 1)', 'rgba(255, 99, 132, 1)', 'rgba(54, 162, 235, 1)', 'rgba(255, 206, 86, 1)'];
+            
+            Object.keys(playerGroups).forEach((playerId, index) => {
+                const playerData = playerGroups[playerId];
+                datasets.push({
+                    label: `Player ${playerId} (Team ${playerData[0].teamID})`,
+                    data: playerData.map(stat => ({
+                        x: stat.frameNum / 30, // Convert frames to seconds (assuming 30 FPS)
+                        y: stat.metalIncomePerSecond
+                    })),
+                    borderColor: colors[index % colors.length],
+                    backgroundColor: colors[index % colors.length].replace('1)', '0.2)'),
+                    fill: false,
+                    tension: 0.1
+                });
+            });
+            
+            metalIncomeChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    datasets: datasets
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            type: 'linear',
+                            title: {
+                                display: true,
+                                text: 'Time (seconds)'
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Metal Income Per Second'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        
+        // Create the energy income chart
+        function createEnergyIncomeChart(playerGroups) {
+            const ctx = document.getElementById('energyIncomeChart').getContext('2d');
+            const datasets = [];
+            const colors = ['rgba(75, 192, 192, 1)', 'rgba(255, 99, 132, 1)', 'rgba(54, 162, 235, 1)', 'rgba(255, 206, 86, 1)'];
+            
+            Object.keys(playerGroups).forEach((playerId, index) => {
+                const playerData = playerGroups[playerId];
+                datasets.push({
+                    label: `Player ${playerId} (Team ${playerData[0].teamID})`,
+                    data: playerData.map(stat => ({
+                        x: stat.frameNum / 30, // Convert frames to seconds
+                        y: stat.energyIncomePerSecond
+                    })),
+                    borderColor: colors[index % colors.length],
+                    backgroundColor: colors[index % colors.length].replace('1)', '0.2)'),
+                    fill: false,
+                    tension: 0.1
+                });
+            });
+            
+            energyIncomeChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    datasets: datasets
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            type: 'linear',
+                            title: {
+                                display: true,
+                                text: 'Time (seconds)'
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Energy Income Per Second'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        
+        // Create the active units chart
+        function createActiveUnitsChart(playerGroups) {
+            const ctx = document.getElementById('activeUnitsChart').getContext('2d');
+            const datasets = [];
+            const colors = ['rgba(75, 192, 192, 1)', 'rgba(255, 99, 132, 1)', 'rgba(54, 162, 235, 1)', 'rgba(255, 206, 86, 1)'];
+            
+            Object.keys(playerGroups).forEach((playerId, index) => {
+                const playerData = playerGroups[playerId];
+                datasets.push({
+                    label: `Player ${playerId} (Team ${playerData[0].teamID})`,
+                    data: playerData.map(stat => ({
+                        x: stat.frameNum / 30, // Convert frames to seconds
+                        y: stat.activeUnits
+                    })),
+                    borderColor: colors[index % colors.length],
+                    backgroundColor: colors[index % colors.length].replace('1)', '0.2)'),
+                    fill: false,
+                    tension: 0.1
+                });
+            });
+            
+            activeUnitsChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    datasets: datasets
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            type: 'linear',
+                            title: {
+                                display: true,
+                                text: 'Time (seconds)'
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Active Units'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        
+        // Create the damage dealt vs received chart
+        function createDamageChart(playerGroups) {
+            const ctx = document.getElementById('damageChart').getContext('2d');
+            const datasets = [];
+            const colors = ['rgba(75, 192, 192, 1)', 'rgba(255, 99, 132, 1)', 'rgba(54, 162, 235, 1)', 'rgba(255, 206, 86, 1)'];
+            
+            Object.keys(playerGroups).forEach((playerId, index) => {
+                const playerData = playerGroups[playerId];
+                
+                // Damage dealt dataset
+                datasets.push({
+                    label: `Player ${playerId} - Damage Dealt`,
+                    data: playerData.map(stat => ({
+                        x: stat.frameNum / 30, // Convert frames to seconds
+                        y: stat.damageDealt
+                    })),
+                    borderColor: colors[index % colors.length],
+                    backgroundColor: 'transparent',
+                    fill: false,
+                    tension: 0.1
+                });
+                
+                // Damage received dataset
+                datasets.push({
+                    label: `Player ${playerId} - Damage Received`,
+                    data: playerData.map(stat => ({
+                        x: stat.frameNum / 30, // Convert frames to seconds
+                        y: stat.damageReceived
+                    })),
+                    borderColor: colors[index % colors.length].replace('1)', '0.5)'),
+                    backgroundColor: 'transparent',
+                    borderDash: [5, 5],
+                    fill: false,
+                    tension: 0.1
+                });
+            });
+            
+            damageChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    datasets: datasets
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        x: {
+                            type: 'linear',
+                            title: {
+                                display: true,
+                                text: 'Time (seconds)'
+                            }
+                        },
+                        y: {
+                            title: {
+                                display: true,
+                                text: 'Damage'
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        
+        // Hide the stats container
+        function hideStats() {
+            document.getElementById('statsContainer').style.display = 'none';
+            document.getElementById('loading').style.display = 'block';
+            document.getElementById('loading').textContent = 'Select a replay to view statistics';
+        }
+        
+        // Show a specific section and hide others
+        function showSection(sectionName) {
+            // Hide all sections
+            document.getElementById('metalSection').style.display = 'none';
+            document.getElementById('energySection').style.display = 'none';
+            document.getElementById('unitsSection').style.display = 'none';
+            document.getElementById('damageSection').style.display = 'none';
+            
+            // Remove active class from all buttons
+            document.querySelectorAll('.stats-controls button').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            
+            // Show the selected section
+            switch(sectionName) {
+                case 'metal':
+                    document.getElementById('metalSection').style.display = 'block';
+                    document.getElementById('showMetalBtn').classList.add('active');
+                    break;
+                case 'energy':
+                    document.getElementById('energySection').style.display = 'block';
+                    document.getElementById('showEnergyBtn').classList.add('active');
+                    break;
+                case 'units':
+                    document.getElementById('unitsSection').style.display = 'block';
+                    document.getElementById('showUnitsBtn').classList.add('active');
+                    break;
+                case 'damage':
+                    document.getElementById('damageSection').style.display = 'block';
+                    document.getElementById('showDamageBtn').classList.add('active');
+                    break;
+            }
+            
+            // Always show unit info section
+            document.getElementById('unitInfoSection').style.display = 'block';
+        }
+        
+        // Show all sections
+        function showAllSections() {
+            document.getElementById('metalSection').style.display = 'block';
+            document.getElementById('energySection').style.display = 'block';
+            document.getElementById('unitsSection').style.display = 'block';
+            document.getElementById('damageSection').style.display = 'block';
+            document.getElementById('unitInfoSection').style.display = 'block';
+            
+            // Remove active class from all buttons
+            document.querySelectorAll('.stats-controls button').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            
+            // Add active class to show all button
+            document.getElementById('showAllBtn').classList.add('active');
+        }
+    </script>
+</body>
+</html>

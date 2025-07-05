@@ -4,3 +4,4 @@ analysis_data/
 data.json
 versions.json
 datadirs/
+node_modules/
