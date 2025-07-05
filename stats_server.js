@@ -53,7 +53,7 @@ const dbPath = process.argv.includes('--db') ?
     './stats.sqlite';
 
 let db = null;
-const activeTransactions = new Map(); // Track active transactions per replay
+const activeReplays = new Set(); // Track active replays (simpler than transactions)
 
 // Cleanup function for orphaned replays
 function cleanupOrphanedReplays() {
@@ -82,10 +82,8 @@ function cleanupOrphanedReplays() {
                     db.run(`DELETE FROM unit_info WHERE replay_id = ?`, [replayID]);
                     db.run(`UPDATE replay_sessions SET status = 'orphaned' WHERE replay_id = ?`, [replayID]);
                     
-                    // Remove from active transactions
-                    if (activeTransactions.has(replayID)) {
-                        activeTransactions.delete(replayID);
-                    }
+                    // Remove from active replays
+                    activeReplays.delete(replayID);
                     
                     console.log(`--Cleaned up orphaned replay: ${replayID}`);
                 });
@@ -107,7 +105,7 @@ if (enableDatabase) {
         console.log(`--Connected to SQLite database: ${dbPath}`);
     });
 
-    // Configure SQLite for maximum performance with delayed writes
+    // Configure SQLite for maximum performance with concurrent access
     db.serialize(() => {
         // Use WAL mode for better concurrent access and performance
         db.run("PRAGMA journal_mode = WAL");
@@ -117,6 +115,8 @@ if (enableDatabase) {
         db.run("PRAGMA synchronous = OFF");
         // Disable auto-checkpoint for better performance
         db.run("PRAGMA wal_autocheckpoint = 0");
+        // Enable concurrent access
+        db.run("PRAGMA busy_timeout = 30000");
     });
 
     // Create tables if they don't exist
@@ -241,18 +241,9 @@ function processStatsLine(line) {
             delete replayStats[replayID];
         }
         
-        // Clear from database and start new transaction if enabled
+        // Clear from database and track session if enabled
         if (enableDatabase && db) {
-            // End any existing transaction for this replay
-            if (activeTransactions.has(replayID)) {
-                console.log(`--Committing previous transaction for replay: ${replayID}`);
-                db.run('COMMIT', (err) => {
-                    if (err) console.error('--Error committing previous transaction:', err.message);
-                });
-                activeTransactions.delete(replayID);
-            }
-            
-            // Clear existing data and start new session
+            // Clear existing data for this replay
             db.serialize(() => {
                 // Clean up any existing data
                 db.run(`DELETE FROM player_stats WHERE replay_id = ?`, [replayID], function(err) {
@@ -279,56 +270,37 @@ function processStatsLine(line) {
                         console.error('--Error tracking replay session:', err.message);
                     } else {
                         console.log(`--Started tracking session for replay: ${replayID}`);
-                    }
-                });
-                
-                // Start new transaction for this replay
-                db.run('BEGIN TRANSACTION', (err) => {
-                    if (err) {
-                        console.error('--Error starting transaction:', err.message);
-                    } else {
-                        activeTransactions.set(replayID, true);
-                        console.log(`--Started transaction for replay: ${replayID}`);
+                        activeReplays.add(replayID);
                     }
                 });
             });
         }
     }
     else if (type === 'BYE') {
-        // Commit transaction to disk for this replay
+        // End replay session and sync to disk
         console.log(`--Ending replay session: ${replayID}`);
         
-        if (enableDatabase && db && activeTransactions.has(replayID)) {
-            db.serialize(() => {
-                // Mark session as completed
-                db.run(`UPDATE replay_sessions SET status = 'completed', last_activity = CURRENT_TIMESTAMP 
-                        WHERE replay_id = ?`, [replayID], (err) => {
-                    if (err) {
-                        console.error('--Error updating replay session status:', err.message);
-                    } else {
-                        console.log(`--Marked replay session as completed: ${replayID}`);
-                    }
-                });
-
-                // Commit the transaction
-                db.run('COMMIT', (err) => {
-                    if (err) {
-                        console.error('--Error committing transaction:', err.message);
-                    } else {
-                        console.log(`--Committed transaction for replay: ${replayID}`);
-                    }
-                });
-                
-                // Force synchronous write to disk
-                db.run('PRAGMA wal_checkpoint(FULL)', (err) => {
-                    if (err) {
-                        console.error('--Error forcing sync to disk:', err.message);
-                    } else {
-                        console.log(`--Forced sync to disk for replay: ${replayID}`);
-                    }
-                });
+        if (enableDatabase && db && activeReplays.has(replayID)) {
+            // Force synchronous write to disk
+            db.run('PRAGMA wal_checkpoint(FULL)', (err) => {
+                if (err) {
+                    console.error('--Error forcing sync to disk:', err.message);
+                } else {
+                    console.log(`--Forced sync to disk for replay: ${replayID}`);
+                }
             });
-            activeTransactions.delete(replayID);
+            
+            // Mark session as completed
+            db.run(`UPDATE replay_sessions SET status = 'completed', last_activity = CURRENT_TIMESTAMP 
+                    WHERE replay_id = ?`, [replayID], (err) => {
+                if (err) {
+                    console.error('--Error updating replay session status:', err.message);
+                } else {
+                    console.log(`--Marked replay session as completed: ${replayID}`);
+                }
+            });
+            
+            activeReplays.delete(replayID);
         }
     }
     else if (type === 'PLAYERSTATS') {
@@ -365,18 +337,6 @@ function processStatsLine(line) {
 
         // Store in database if enabled
         if (enableDatabase && db) {
-            // Ensure we have an active transaction for this replay
-            if (!activeTransactions.has(replayID)) {
-                db.run('BEGIN TRANSACTION', (err) => {
-                    if (err) {
-                        console.error('--Error starting transaction:', err.message);
-                    } else {
-                        activeTransactions.set(replayID, true);
-                        console.log(`--Started transaction for replay: ${replayID}`);
-                    }
-                });
-            }
-            
             // Update last activity for this replay
             db.run(`UPDATE replay_sessions SET last_activity = CURRENT_TIMESTAMP WHERE replay_id = ?`, 
                    [replayID], (err) => {
@@ -430,18 +390,6 @@ function processStatsLine(line) {
 
         // Store in database if enabled
         if (enableDatabase && db) {
-            // Ensure we have an active transaction for this replay
-            if (!activeTransactions.has(replayID)) {
-                db.run('BEGIN TRANSACTION', (err) => {
-                    if (err) {
-                        console.error('--Error starting transaction:', err.message);
-                    } else {
-                        activeTransactions.set(replayID, true);
-                        console.log(`--Started transaction for replay: ${replayID}`);
-                    }
-                });
-            }
-            
             // Update last activity for this replay
             db.run(`UPDATE replay_sessions SET last_activity = CURRENT_TIMESTAMP WHERE replay_id = ?`, 
                    [replayID], (err) => {
@@ -827,9 +775,9 @@ process.on('SIGINT', () => {
     server.close(() => {
         console.log('--TCP server closed');
         if (enableDatabase && db) {
-            // Mark any active sessions as interrupted and commit transactions
-            if (activeTransactions.size > 0) {
-                console.log(`--Committing ${activeTransactions.size} active transactions...`);
+            // Mark any active sessions as interrupted
+            if (activeReplays.size > 0) {
+                console.log(`--Marking ${activeReplays.size} active sessions as interrupted...`);
                 
                 // Mark active sessions as interrupted
                 db.run(`UPDATE replay_sessions SET status = 'interrupted' WHERE status = 'active'`, (err) => {
@@ -837,19 +785,13 @@ process.on('SIGINT', () => {
                         console.error('--Error marking sessions as interrupted:', err.message);
                     }
                     
-                    // Commit any active transactions
-                    db.run('COMMIT', (err) => {
+                    db.close((err) => {
                         if (err) {
-                            console.error('--Error committing final transactions:', err.message);
+                            console.error('--Error closing database:', err.message);
+                        } else {
+                            console.log('--Database connection closed');
                         }
-                        db.close((err) => {
-                            if (err) {
-                                console.error('--Error closing database:', err.message);
-                            } else {
-                                console.log('--Database connection closed');
-                            }
-                            process.exit(0);
-                        });
+                        process.exit(0);
                     });
                 });
             } else {
@@ -873,9 +815,9 @@ process.on('SIGTERM', () => {
     server.close(() => {
         console.log('--TCP server closed');
         if (enableDatabase && db) {
-            // Mark any active sessions as interrupted and commit transactions
-            if (activeTransactions.size > 0) {
-                console.log(`--Committing ${activeTransactions.size} active transactions...`);
+            // Mark any active sessions as interrupted
+            if (activeReplays.size > 0) {
+                console.log(`--Marking ${activeReplays.size} active sessions as interrupted...`);
                 
                 // Mark active sessions as interrupted
                 db.run(`UPDATE replay_sessions SET status = 'interrupted' WHERE status = 'active'`, (err) => {
@@ -883,19 +825,13 @@ process.on('SIGTERM', () => {
                         console.error('--Error marking sessions as interrupted:', err.message);
                     }
                     
-                    // Commit any active transactions
-                    db.run('COMMIT', (err) => {
+                    db.close((err) => {
                         if (err) {
-                            console.error('--Error committing final transactions:', err.message);
+                            console.error('--Error closing database:', err.message);
+                        } else {
+                            console.log('--Database connection closed');
                         }
-                        db.close((err) => {
-                            if (err) {
-                                console.error('--Error closing database:', err.message);
-                            } else {
-                                console.log('--Database connection closed');
-                            }
-                            process.exit(0);
-                        });
+                        process.exit(0);
                     });
                 });
             } else {
