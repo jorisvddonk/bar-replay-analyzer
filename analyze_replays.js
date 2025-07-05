@@ -131,6 +131,7 @@ async function analyzeGame(gameFilename) {
         const luaScript = `
 replay_info_host = "127.0.0.1"; -- controls what IP address stats are sent to
 replay_info_port = 12406; -- controls what port stats are sent to
+replay_info_send_stats_frames = 10; -- controls how often stats are sent to the server (negative = never, 1 = every frame, 30 = every 30 frames, etc.)
 -- data from the JSON file:
 gameVersion = "${data.gameVersion}";
 engineVersion = "${data.engineVersion}";
@@ -221,7 +222,7 @@ function sleep(duration) {
 async function slotFree() {
     while(workers.size >= NUM_WORKERS) {
         //console.log("-------SLEEPING-------", workers.size);
-        await sleep(100);
+        await sleep(NUM_WORKERS > 1 ? 100 : 1);
     }
     //console.log("done sleeping", workers.size);
 }

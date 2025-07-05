@@ -98,7 +98,7 @@ function SetupSocket()
     log("<Statistics logger> Connection established!")
     
     -- Send a message
-    local message = "Hello from Beyond All Reason! This is replay with id: " .. replay_info.id .. "\n"
+    local message = "# Hello from Beyond All Reason! This is replay with id: " .. replay_info.id .. "\n"
     local bytes_sent, send_err = tcp:send(message)
     
     if not bytes_sent then
@@ -197,6 +197,24 @@ end
 
 function widget:GameFrame(frame)  
     frameNum = frame
+    if (replay_info.replay_info_send_stats_frames >= 0 and frameNum % replay_info.replay_info_send_stats_frames == 0) then
+        -- send per-player stats in the format: frameNum,'playerStats',playerID,teamID,allyTeamID,metalIncomePerSecond,energyIncomePerSecond,metalStored,energyStored,activeUnits,unitsDied,unitsKilled,unitsCaptured,damageDealt,damageReceived
+        for playerID = 0, 255 do
+            local playerName, active, spectator, teamID, allyTeamID, pingTime, cpuUsage, country, rank, customPlayerKeys = Spring.GetPlayerInfo(playerID)
+            if playerName and not spectator then
+                local metalIncome, energyIncome, metalStored, energyStored = Spring.GetTeamResources(teamID, "metal")
+                local activeUnits = Spring.GetTeamUnitCount(teamID) or 0
+                local unitsKilled, unitsDied, unitsCapturedBy, unitsCapturedFrom, unitsReceived, unitsSent = Spring.GetTeamUnitStats(teamID)
+                local damageDealt, damageReceived = Spring.GetTeamDamageStats(teamID)
+                local maxUnits, currentUnits = Spring.GetTeamMaxUnits(teamID)
+
+                local playerStats = string.format("%d,playerStats,%d,%d,%d,%f,%f,%f,%f,%d,%d,%d,%d,%f,%f\n",
+                    frameNum, playerID, teamID, allyTeamID, metalIncome, energyIncome, metalStored, energyStored,
+                    activeUnits, unitsDied, unitsKilled, unitsCapturedBy, damageDealt, damageReceived)
+                sendStat(playerStats, true)
+            end
+        end
+    end
 end
 
 function widget:Shutdown()
@@ -219,7 +237,7 @@ function sendToSocket(message)
         return
     end
 
-    local bytes_sent, send_err = tcp:send(message .. "\n")
+    local bytes_sent, send_err = tcp:send(message)
     if not bytes_sent then
         log("<Statistics logger> Send failed: " .. send_err)
     else
@@ -227,10 +245,12 @@ function sendToSocket(message)
     end
 end
 
-function sendStat(message)
-    file:write(message)
+function sendStat(message, socketOnly)
+    if not socketOnly then
+        file:write(message)
+        file:flush()
+    end
     sendToSocket(replay_info.id .. "," .. message)
-    file:flush()
 end
 
 function widget:UnitCreated(unitID, unitDefID, unitTeam)
