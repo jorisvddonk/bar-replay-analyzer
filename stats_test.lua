@@ -189,6 +189,9 @@ function widget:Initialize()
 
         log("<Statistics logger> Setting replay speed")
         setReplaySpeed(9999.0)
+
+        log("<Statistics logger> Sending initial HELLO message")
+        sendToSocket("HELLO," .. replay_info.id .. "\n")
     else
         Spring.Echo("<Statistics logger> We are not headless; removing statistics logger widget!")
         widgetHandler:RemoveWidget()
@@ -220,6 +223,8 @@ end
 function widget:Shutdown()
     if (active) then
         log("<Statistics logger> Shutting down")
+        log("<Statistics logger> Sending BYE message")
+        sendToSocket("BYE," .. replay_info.id .. "\n")
         log("<Statistics logger> Closing socket connection")
         TeardownSocket()
         log("<Statistics logger> Flushing and closing files")
