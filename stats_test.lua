@@ -83,14 +83,14 @@ function SetupSocket()
 
     -- Connect to a server
     -- Replace with your actual server IP and port
-    local host = replay_info.replay_info_host
-    local port = replay_info.replay_info_port
+    local host = replay_info.replay_info_host or "localhost"
+    local port = replay_info.replay_info_port or 12406
     
     log("<Statistics logger> Attempting to connect to " .. host .. ":" .. port)
     local success, err = tcp:connect(host, port)
     
     if not success then
-        log("<Statistics logger> Connection failed: " .. err)
+        log("<Statistics logger> Connection failed: " .. (err or "unknown error"))
         tcp:close()
         return
     end
@@ -98,11 +98,12 @@ function SetupSocket()
     log("<Statistics logger> Connection established!")
     
     -- Send a message
-    local message = "# Hello from Beyond All Reason! This is replay with id: " .. replay_info.id .. "\n"
+    local replay_id = replay_info.id or "unknown"
+    local message = "# Hello from Beyond All Reason! This is replay with id: " .. replay_id .. "\n"
     local bytes_sent, send_err = tcp:send(message)
     
     if not bytes_sent then
-        log("<Statistics logger> Send failed: " .. send_err)
+        log("<Statistics logger> Send failed: " .. (send_err or "unknown error"))
     else
         log("<Statistics logger> Sent " .. bytes_sent .. " bytes")
     end
@@ -137,14 +138,14 @@ local function isSpectator()
     end
 end
 
-local function setReplaySpeed (speed, i)
+local function setReplaySpeed(speed, i)
 	local s = Spring.GetGameSpeed()
 	if (speed > s) then	--speedup
-		Spring.SendCommands ("setminspeed " .. speed)
-		Spring.SendCommands ("setminspeed " .. 0.1)
+		Spring.SendCommands("setminspeed " .. speed)
+		Spring.SendCommands("setminspeed " .. 0.1)
 	else	--slowdown
-		Spring.SendCommands ("setmaxspeed " .. speed)
-		Spring.SendCommands ("setmaxspeed " .. 9999.0)
+		Spring.SendCommands("setmaxspeed " .. speed)
+		Spring.SendCommands("setmaxspeed " .. 9999.0)
 	end
 end
 
@@ -173,7 +174,30 @@ function widget:Initialize()
         file = io.open("stats.csv", "w")
         log("<Statistics logger> Initializing")
         log("<Statistics logger> We are headless and spectating a replay!")
-        VFS.Include("replay_info.lua", replay_info) -- load the replay info
+        
+        -- Safely load replay info
+        local success, err = pcall(function()
+            VFS.Include("replay_info.lua", replay_info) -- load the replay info
+        end)
+        
+        if not success then
+            log("<Statistics logger> Error loading replay info: " .. (err or "unknown error"))
+            -- Initialize with default values if loading fails
+            replay_info = replay_info or {}
+            replay_info.id = replay_info.id or "unknown"
+            replay_info.replay_info_host = replay_info.replay_info_host or "localhost"
+            replay_info.replay_info_port = replay_info.replay_info_port or 12406
+            replay_info.replay_info_send_stats_frames = replay_info.replay_info_send_stats_frames or 30
+            replay_info.replay_info_raw_json = replay_info.replay_info_raw_json or "{}"
+        end
+        
+        -- Ensure all required fields have default values
+        replay_info.id = replay_info.id or "unknown"
+        replay_info.replay_info_host = replay_info.replay_info_host or "localhost"
+        replay_info.replay_info_port = replay_info.replay_info_port or 12406
+        replay_info.replay_info_send_stats_frames = replay_info.replay_info_send_stats_frames or 30
+        replay_info.replay_info_raw_json = replay_info.replay_info_raw_json or "{}"
+        
         log("<Statistics logger> Replay info loaded")
         file:write("frameNum,status,unitID,unitDefID,unitTeam,unitName\n")
         file:flush()
@@ -191,10 +215,10 @@ function widget:Initialize()
         setReplaySpeed(9999.0)
 
         log("<Statistics logger> Sending initial HELLO message")
-        sendToSocket("HELLO," .. replay_info.id .. "\n")
+        sendToSocket("HELLO," .. (replay_info.id or "unknown") .. "\n")
 
         log("<Statistics logger> Sending INFO message containing all available replay info")
-        sendToSocket("INFO," .. replay_info.id .. "," .. replay_info.replay_info_raw_json .. "\n")
+        sendToSocket("INFO," .. (replay_info.id or "unknown") .. "," .. (replay_info.replay_info_raw_json or "{}") .. "\n")
     else
         Spring.Echo("<Statistics logger> We are not headless; removing statistics logger widget!")
         widgetHandler:RemoveWidget()
@@ -203,16 +227,53 @@ end
 
 function widget:GameFrame(frame)  
     frameNum = frame
-    if (replay_info.replay_info_send_stats_frames >= 0 and frameNum % replay_info.replay_info_send_stats_frames == 0) then
+    -- Safely check if we should send stats
+    local send_stats_frames = replay_info.replay_info_send_stats_frames or -1
+    if (send_stats_frames >= 0 and frameNum % send_stats_frames == 0) then
         -- send per-player stats in the format: frameNum,'playerStats',playerID,teamID,allyTeamID,metalIncomePerSecond,energyIncomePerSecond,metalStored,energyStored,activeUnits,unitsDied,unitsKilled,unitsCaptured,damageDealt,damageReceived
         for playerID = 0, 255 do
             local playerName, active, spectator, teamID, allyTeamID, pingTime, cpuUsage, country, rank, customPlayerKeys = Spring.GetPlayerInfo(playerID)
             if playerName and not spectator then
-                local metalIncome, energyIncome, metalStored, energyStored = Spring.GetTeamResources(teamID, "metal")
-                local activeUnits = Spring.GetTeamUnitCount(teamID) or 0
-                local unitsKilled, unitsDied, unitsCapturedBy, unitsCapturedFrom, unitsReceived, unitsSent = Spring.GetTeamUnitStats(teamID)
-                local damageDealt, damageReceived = Spring.GetTeamDamageStats(teamID)
-                local maxUnits, currentUnits = Spring.GetTeamMaxUnits(teamID)
+                -- Safely get team resources
+                local metalIncome, energyIncome, metalStored, energyStored = 0, 0, 0, 0
+                local success, err = pcall(function()
+                    metalIncome, energyIncome, metalStored, energyStored = Spring.GetTeamResources(teamID, "metal")
+                end)
+                if not success then
+                    log("<Statistics logger> Error getting team resources: " .. (err or "unknown error"))
+                end
+                
+                local activeUnits = 0
+                success, err = pcall(function()
+                    activeUnits = Spring.GetTeamUnitCount(teamID) or 0
+                end)
+                if not success then
+                    log("<Statistics logger> Error getting team unit count: " .. (err or "unknown error"))
+                end
+                
+                local unitsKilled, unitsDied, unitsCapturedBy, unitsCapturedFrom, unitsReceived, unitsSent = 0, 0, 0, 0, 0, 0
+                success, err = pcall(function()
+                    unitsKilled, unitsDied, unitsCapturedBy, unitsCapturedFrom, unitsReceived, unitsSent = Spring.GetTeamUnitStats(teamID)
+                end)
+                if not success then
+                    log("<Statistics logger> Error getting team unit stats: " .. (err or "unknown error"))
+                end
+                
+                local damageDealt, damageReceived = 0, 0
+                success, err = pcall(function()
+                    damageDealt, damageReceived = Spring.GetTeamDamageStats(teamID)
+                end)
+                if not success then
+                    log("<Statistics logger> Error getting team damage stats: " .. (err or "unknown error"))
+                end
+                
+                local maxUnits, currentUnits = 0, 0
+                success, err = pcall(function()
+                    maxUnits, currentUnits = Spring.GetTeamMaxUnits(teamID)
+                end)
+                if not success then
+                    log("<Statistics logger> Error getting team max units: " .. (err or "unknown error"))
+                end
 
                 local playerStats = string.format("%d,playerStats,%d,%d,%d,%f,%f,%f,%f,%d,%d,%d,%d,%f,%f\n",
                     frameNum, playerID, teamID, allyTeamID, metalIncome, energyIncome, metalStored, energyStored,
@@ -227,14 +288,18 @@ function widget:Shutdown()
     if (active) then
         log("<Statistics logger> Shutting down")
         log("<Statistics logger> Sending BYE message")
-        sendToSocket("BYE," .. replay_info.id .. "\n")
+        sendToSocket("BYE," .. (replay_info.id or "unknown") .. "\n")
         log("<Statistics logger> Closing socket connection")
         TeardownSocket()
         log("<Statistics logger> Flushing and closing files")
-        file:flush()
-        file:close()
-        flog:flush()
-        flog:close()
+        if file then
+            file:flush()
+            file:close()
+        end
+        if flog then
+            flog:flush()
+            flog:close()
+        end
         Spring.Quit()
     end
 end
@@ -247,33 +312,48 @@ function sendToSocket(message)
 
     local bytes_sent, send_err = tcp:send(message)
     if not bytes_sent then
-        log("<Statistics logger> Send failed: " .. send_err)
+        log("<Statistics logger> Send failed: " .. (send_err or "unknown error"))
     else
-        log("<Statistics logger> Sent " .. bytes_sent .. " bytes: " .. message)
+        --log("<Statistics logger> Sent " .. bytes_sent .. " bytes: " .. message)
     end
 end
 
 function sendStat(message, socketOnly, prefix)
-    if not socketOnly then
+    if not socketOnly and file then
         file:write(message)
         file:flush()
     end
-    sendToSocket(prefix .. "," .. replay_info.id .. "," .. message)
+    
+    -- Ensure replay_info.id exists before using it
+    local replay_id = replay_info.id or "unknown"
+    sendToSocket((prefix or "STAT") .. "," .. replay_id .. "," .. message)
 end
 
 function widget:UnitCreated(unitID, unitDefID, unitTeam)
-    --log("Found a new unit: " .. unitID  .. " - " .. unitDefID .. " -- " .. UnitDefs[unitDefID].name)
-    sendStat(frameNum .. ",created," .. unitID  .. "," .. unitDefID .. "," .. unitTeam .. "," .. UnitDefs[unitDefID].name .. "\n", false, "UNITINFO")
+    -- Safely handle unit creation
+    local unitName = "unknown"
+    if UnitDefs and UnitDefs[unitDefID] then
+        unitName = UnitDefs[unitDefID].name or "unknown"
+    end
+    sendStat(frameNum .. ",created," .. unitID  .. "," .. unitDefID .. "," .. unitTeam .. "," .. unitName .. "\n", false, "UNITINFO")
 end
 
 function widget:UnitFinished(unitID, unitDefID, unitTeam)
-    --log("Found a new unit: " .. unitID  .. " - " .. unitDefID .. " -- " .. UnitDefs[unitDefID].name)
-    sendStat(frameNum .. ",finished," .. unitID  .. "," .. unitDefID .. "," .. unitTeam .. "," .. UnitDefs[unitDefID].name .. "\n", false, "UNITINFO")
+    -- Safely handle unit finished
+    local unitName = "unknown"
+    if UnitDefs and UnitDefs[unitDefID] then
+        unitName = UnitDefs[unitDefID].name or "unknown"
+    end
+    sendStat(frameNum .. ",finished," .. unitID  .. "," .. unitDefID .. "," .. unitTeam .. "," .. unitName .. "\n", false, "UNITINFO")
 end
 
 function widget:UnitDestroyed(unitID, unitDefID, unitTeam, attackerID, attackerDefID, attackerTeam)
-    --log("Unit destroyed" .. unitID  .. " - " .. unitDefID .. " -- " .. UnitDefs[unitDefID].name)
-    sendStat(frameNum .. ",destroyed," .. unitID  .. "," .. unitDefID .. "," .. unitTeam .. "," .. UnitDefs[unitDefID].name .. "\n", false, "UNITINFO")
+    -- Safely handle unit destruction
+    local unitName = "unknown"
+    if UnitDefs and UnitDefs[unitDefID] then
+        unitName = UnitDefs[unitDefID].name or "unknown"
+    end
+    sendStat(frameNum .. ",destroyed," .. unitID  .. "," .. unitDefID .. "," .. unitTeam .. "," .. unitName .. "\n", false, "UNITINFO")
 end
 
 function widget:Update()
