@@ -2,6 +2,20 @@ const net = require('net');
 const express = require('express');
 const cors = require('cors');
 
+// command line usage:
+const usage = `Usage:
+node stats_server.js [options]
+Options:
+--port <port>    Specify the port to listen on (default: 12406)
+--web-port <port> Specify the port for the web server (default: 3000)
+--help           Show this help message
+--log            Enable logging of received data (default: false)
+--stats          Enable collection of stats (default: true)
+--web            Enable web server (default: true)
+`;
+
+
+
 /* Stats format over the wire:
 UNITINFO,replayID,frameNum,status,unitID,unitDefID,unitTeam,unitName // status is either 'created', 'finished', or 'destroyed'
 PLAYERSTATS,replayID,frameNum,'playerStats',playerID,teamID,allyTeamID,metalIncomePerSecond,energyIncomePerSecond,metalStored,energyStored,activeUnits,unitsDied,unitsKilled,unitsCaptured,damageDealt,damageReceived
@@ -18,7 +32,23 @@ UNITINFO,c0b6f1662dfda4d42e07d471a5a68f16,3698,created,13662,321,1,corfav
 // collect stats per replay
 const replayStats = {};
 
+// check if --stats option is provided; default is true
+const collectStats = process.argv.includes('--stats') ? true : !process.argv.includes('--no-stats');
+
+// check if --log option is provided
+const logData = process.argv.includes('--log');
+
+// log help if needed
+if (process.argv.includes('--help')) {
+    console.log(usage);
+    process.exit(0);
+}
+
 function processStatsLine(line) {
+    if (!collectStats) {
+        return; // skip processing if stats collection is disabled
+    }
+    
     // Split the line by commas
     const parts = line.split(',');
     if (parts.length < 3) {
@@ -104,7 +134,9 @@ const server = net.createServer((socket) => {
             }
             //console.log(`--Received data from ${socket.remoteAddress}:${socket.remotePort}:`);
             // write without newline
-            process.stdout.write(line + '\n');
+            if (logData) {
+                process.stdout.write(line + '\n');
+            }
             processStatsLine(line);
         });
     });
@@ -125,12 +157,13 @@ server.on('error', (err) => {
     console.error('--Server error:', err);
 });
 
-// Start listening on port 12406
-server.listen(12406, () => {
-    console.log('--TCP server listening on port 12406');
+// Start listening on port 12406 or the port specified by --port option
+const port = process.argv.includes('--port') ? parseInt(process.argv[process.argv.indexOf('--port') + 1], 10) : 12406;
+server.listen(port, () => {
+    console.log(`--TCP server listening on port ${port}`);
 });
 
-// Add web server to serve collected stats:
+// Add web server to serve collected stats (only if web server is enabled):
 const app = express();
 app.use(cors());
 app.use(express.json());
@@ -150,8 +183,11 @@ app.get('/stats/:replayID', (req, res) => {
         res.status(404).json({ error: 'Replay ID not found' });
     }
 });
-app.listen(3000, () => {
-    console.log('--Web server listening on port 3000');
+if (process.argv.includes('--web') ? true : !process.argv.includes('--no-web')) {
+    // Enable web server if --web option is provided
+    app.use(express.static('web')); // Serve static files from the 'web' directory
+}
+const webPort = process.argv.includes('--web-port') ? parseInt(process.argv[process.argv.indexOf('--web-port') + 1], 10) : 3000;
+app.listen(webPort, () => {
+    console.log(`--Web server listening on port ${webPort}`);
 });
-// server index.html from ./web/index.html
-app.use(express.static('web'));
