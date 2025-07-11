@@ -227,3 +227,7 @@ You can customize the web port using the `--web-port` option when starting the s
 ## Contributing
 
 Feel free to submit issues and pull requests. The codebase supports both Windows and Linux environments.
+
+## LICENSE
+
+BAR Replay Analyzer by Joris van de Donk is marked CC0 1.0 Universal. To view a copy of this mark, visit https://creativecommons.org/publicdomain/zero/1.0/
