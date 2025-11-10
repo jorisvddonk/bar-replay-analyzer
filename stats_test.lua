@@ -138,15 +138,9 @@ local function isSpectator()
     end
 end
 
-local function setReplaySpeed(speed, i)
-	local s = Spring.GetGameSpeed()
-	if (speed > s) then	--speedup
-		Spring.SendCommands("setminspeed " .. speed)
-		Spring.SendCommands("setminspeed " .. 0.1)
-	else	--slowdown
-		Spring.SendCommands("setmaxspeed " .. speed)
-		Spring.SendCommands("setmaxspeed " .. 9999.0)
-	end
+local function setMaxReplaySpeed()
+    Spring.SendCommands("setmaxspeed 9999")
+    Spring.SendCommands("setminspeed 9999")
 end
 
 function log(s)
@@ -212,7 +206,7 @@ function widget:Initialize()
         SetupSocket()
 
         log("<Statistics logger> Setting replay speed")
-        setReplaySpeed(9999.0)
+        setMaxReplaySpeed()
 
         log("<Statistics logger> Sending initial HELLO message")
         sendToSocket("HELLO," .. (replay_info.id or "unknown") .. "\n")
